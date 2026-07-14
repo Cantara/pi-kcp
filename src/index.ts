@@ -270,19 +270,47 @@ function agentNotFoundMessage(config: KcpConfig): string {
   return `kcp-agent CLI was not found.${configured} Set agentCli in .pi/kcp.json, set KCP_AGENT_CLI, or install the kcp-agent executable.`;
 }
 
-async function runPlan(pi: ExtensionAPI, cwd: string, intent: string, config: KcpConfig): Promise<string> {
+async function runKcpAgent(pi: ExtensionAPI, cwd: string, args: string[], config: KcpConfig): Promise<string> {
   const invocation = await findAgentInvocation(pi, config);
   if (!invocation) throw new Error(agentNotFoundMessage(config));
 
   const result = await pi.exec(
     invocation.command,
-    [...invocation.args, "plan", intent, "--manifest", resolve(cwd, config.manifest)],
+    [...invocation.args, ...args],
     { timeout: 15_000 },
   );
   if (result.code !== 0) {
     throw new Error(result.stderr.trim() || `kcp-agent exited with code ${result.code}`);
   }
   return result.stdout.trim();
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path, constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runPlan(pi: ExtensionAPI, cwd: string, intent: string, config: KcpConfig): Promise<string> {
+  return runKcpAgent(pi, cwd, ["plan", intent, "--manifest", resolve(cwd, config.manifest)], config);
+}
+
+async function runValidate(pi: ExtensionAPI, cwd: string, config: KcpConfig): Promise<string> {
+  return runKcpAgent(pi, cwd, ["validate", resolve(cwd, config.manifest), "--json"], config);
+}
+
+async function runInit(pi: ExtensionAPI, cwd: string, config: KcpConfig): Promise<string> {
+  if (config.manifest !== "knowledge.yaml") {
+    throw new Error("/kcp init only creates the default knowledge.yaml; set manifest to knowledge.yaml first.");
+  }
+  const manifest = resolve(cwd, config.manifest);
+  if (await pathExists(manifest)) {
+    throw new Error(`Manifest already exists at ${manifest}; /kcp init will not overwrite it.`);
+  }
+  return runKcpAgent(pi, cwd, ["init", cwd], config);
 }
 
 function show(ctx: { hasUI: boolean; ui: { notify(message: string, level: "info" | "warning" | "error"): void } }, message: string, level: "info" | "warning" | "error" = "info"): void {
@@ -353,6 +381,28 @@ export default function register(pi: ExtensionAPI): void {
           const plan = await runPlan(pi, ctx.cwd, intent, config);
           publish(pi, "KCP plan", plan);
           show(ctx, "Added the kcp-agent load plan to the next turn.");
+        } catch (error) {
+          show(ctx, error instanceof Error ? error.message : String(error), "warning");
+        }
+        return;
+      }
+
+      if (subcommand === "validate") {
+        try {
+          const report = await runValidate(pi, ctx.cwd, config);
+          publish(pi, "KCP validation", report);
+          show(ctx, "Added the kcp-agent validation report to the next turn.");
+        } catch (error) {
+          show(ctx, error instanceof Error ? error.message : String(error), "warning");
+        }
+        return;
+      }
+
+      if (subcommand === "init") {
+        try {
+          const result = await runInit(pi, ctx.cwd, config);
+          publish(pi, "KCP initialization", result);
+          show(ctx, "Created knowledge.yaml and added the result to the next turn.");
         } catch (error) {
           show(ctx, error instanceof Error ? error.message : String(error), "warning");
         }

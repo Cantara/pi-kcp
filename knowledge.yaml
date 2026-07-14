@@ -1,0 +1,49 @@
+kcp_version: "0.25"
+project: pi-kcp
+version: 0.1.0
+updated: "2026-07-14"
+language: en
+
+units:
+  - id: front-door
+    path: README.md
+    intent: "What is pi-kcp, who is it for, and how does an agent or human get started?"
+    scope: global
+    audience: [agent, human]
+    triggers: [overview, getting started, install, pi, KCP]
+    hints: {load_strategy: eager}
+
+  - id: agent-instructions
+    path: AGENTS.md
+    intent: "What architectural invariants, development rules, and verification commands govern pi-kcp?"
+    scope: project
+    audience: [agent, developer]
+    triggers: [development, implementation, architecture, tests, conventions]
+
+  - id: architecture
+    path: docs/architecture.md
+    intent: "How are Pi, KCP memory, kcp-agent, MCP, and optional code-intelligence providers separated?"
+    scope: project
+    audience: [agent, developer]
+    triggers: [architecture, transport, MCP, Synthesis, memory, provider]
+
+  - id: development-skill
+    path: .pi/skills/pi-kcp-development/SKILL.md
+    intent: "How should an agent implement and verify changes in pi-kcp without duplicating KCP services?"
+    scope: project
+    audience: [agent]
+    triggers: [code, implement, refactor, verify, change]
+
+  - id: installation-validation
+    path: .pi/skills/installation-validation/SKILL.md
+    intent: "How should an agent validate a fresh pi-kcp installation and its KCP integrations?"
+    scope: project
+    audience: [agent, developer]
+    triggers: [install, smoke, validation, release, integration]
+
+  - id: mcp-providers
+    path: docs/mcp-providers.md
+    intent: "How are optional KCP and code-intelligence MCP providers configured and substituted?"
+    scope: project
+    audience: [agent, developer]
+    triggers: [MCP, provider, Synthesis, directTools, harness]
