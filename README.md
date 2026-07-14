@@ -34,8 +34,11 @@ Install or load the extension, then use:
 ```bash
 bun install
 bun run build
-pi -e ./dist/index.js
+bun run smoke
+pi -e ./dist/src/index.js
 ```
+
+`bun run smoke` starts Pi in RPC mode and verifies that both the TypeScript source extension and built package extension register `/kcp`. It requires `pi` and `jq` on `PATH` but no KCP daemon.
 
 For a local source reload during development:
 
