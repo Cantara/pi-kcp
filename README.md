@@ -30,6 +30,8 @@ Install or load the extension, then use:
 /kcp health
 /kcp recall <query>
 /kcp plan <intent>
+/kcp validate
+/kcp init
 ```
 
 `/kcp recall` and `/kcp plan` add their result to the next Pi turn as a context message. Recall-shaped prompts (for example, “what did we decide about deployment?”) are augmented automatically when the local kcp-memory HTTP daemon is available. Recall failures are silent and never block a prompt.
@@ -145,7 +147,7 @@ This project will not:
 
 ## Roadmap
 
-The initial backlog is tracked in GitHub Issues. The next likely steps are configuration validation, and a fake-daemon integration test suite.
+The project is KCP-adopted itself: `knowledge.yaml` describes its agent-facing documentation and skills. The next likely steps are stronger installation validation, explicit command help, and upstream Pi integration in kcp-harness.
 
 ## License
 
