@@ -21,7 +21,7 @@ When available, `bun run smoke` loads both `src/index.ts` and the built extensio
 Use local fakes before real services:
 
 - fake kcp-memory HTTP server for `/search` and `/health`;
-- deterministic fake `kcp-agent` executable for `/kcp plan`;
+- deterministic fake `kcp-agent` executable for `/kcp plan`, `/kcp validate`, and `/kcp init`;
 - temporary `.pi/kcp.json` in a fixture project.
 
 Cover healthy responses, empty results, malformed responses, timeout behavior, invalid configuration, disabled configuration, and fail-open automatic recall.

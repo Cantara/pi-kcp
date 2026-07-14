@@ -25,7 +25,11 @@ The supported command surface is:
 /kcp health
 /kcp recall <query>
 /kcp plan <intent>
+/kcp validate
+/kcp init
 ```
+
+`knowledge.yaml` is the project's own KCP manifest. Keep it valid whenever agent-facing documentation or skills change.
 
 Explicit recall and plan results are placed into the next Pi turn. Automatic recall only activates for clear temporal or retrospective language and must never block a prompt when kcp-memory is unavailable.
 
