@@ -1,10 +1,29 @@
 import { describe, expect, it } from "bun:test";
 import {
+  agentInvocationForPath,
   extractRecallQuery,
   formatRecallBlock,
   parseSearchResults,
   shouldRecall,
 } from "../src/index.js";
+
+describe("kcp-agent invocation discovery", () => {
+  it("runs JavaScript CLIs through node", () => {
+    expect(agentInvocationForPath("/opt/kcp-agent/dist/cli.js")).toEqual({
+      command: "node",
+      args: ["/opt/kcp-agent/dist/cli.js"],
+      label: "node /opt/kcp-agent/dist/cli.js",
+    });
+  });
+
+  it("runs executable CLIs directly", () => {
+    expect(agentInvocationForPath("/usr/local/bin/kcp-agent")).toEqual({
+      command: "/usr/local/bin/kcp-agent",
+      args: [],
+      label: "/usr/local/bin/kcp-agent",
+    });
+  });
+});
 
 describe("recall signal detection", () => {
   it("detects retrospective prompts", () => {

@@ -61,7 +61,7 @@ The extension works with conservative defaults. A project may add `.pi/kcp.json`
 }
 ```
 
-All fields are optional. `agentCli` is useful when `kcp-agent` is installed from a local checkout or in a non-standard location.
+All fields are optional. `agentCli` may point to either the JavaScript CLI module or an executable command. Discovery checks the configured path, `KCP_AGENT_CLI`, the documented Homebrew/npm locations, and finally `kcp-agent` on `PATH`.
 
 ## MCP configuration
 
@@ -110,7 +110,7 @@ This project will not:
 
 ## Roadmap
 
-The initial backlog is tracked in GitHub Issues. The next likely steps are installation smoke tests, stronger CLI discovery diagnostics, configuration validation, and a fake-daemon integration test suite.
+The initial backlog is tracked in GitHub Issues. The next likely steps are configuration validation, and a fake-daemon integration test suite.
 
 ## License
 
