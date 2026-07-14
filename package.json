@@ -8,6 +8,7 @@
   "scripts": {
     "build": "tsc --outDir dist",
     "pr-eval": "bun scripts/pr-eval.ts",
+    "smoke": "./scripts/smoke-extension.sh",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
