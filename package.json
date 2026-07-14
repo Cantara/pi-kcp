@@ -7,6 +7,7 @@
   "files": ["dist", "README.md", "AGENTS.md", "LICENSE"],
   "scripts": {
     "build": "tsc --outDir dist",
+    "pr-eval": "bun scripts/pr-eval.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

@@ -2,11 +2,12 @@
 
 ## Purpose
 
-`pi-kcp` is a small, open-source Pi extension that improves access to KCP development tools. It is an adapter and ergonomics layer, not a replacement for KCP services or MCP.
+`pi-kcp` is a small, open-source Pi integration for both agents and humans. It gives the LLM skills and operating guidance for using KCP development tools, while giving humans explicit commands and diagnostics. It is an adapter and proficiency layer, not a replacement for KCP services, kcp-harness, or MCP.
 
 ## Architectural invariants
 
-1. Keep the Pi extension thin and optional.
+1. Treat agent-facing skills and MCP guidance as first-class product surfaces, alongside human-facing commands.
+2. Keep the Pi extension thin and optional.
 2. Use MCP for LLM-facing KCP and code-intelligence tools.
 3. Use HTTP only where the extension must enrich a prompt before the LLM turn starts.
 4. Invoke `kcp-agent` as a CLI; do not copy its planner logic into this repository.
@@ -44,6 +45,15 @@ bun install
 bun run typecheck
 bun test
 bun run build
+```
+
+When the installation smoke-test target is present, also run `bun run smoke`.
+
+Independent PR evaluation:
+
+```bash
+bun run pr-eval -- <PR> [<PR> ...]
+bun run pr-eval -- <PR> --comment
 ```
 
 Run the extension locally with:
