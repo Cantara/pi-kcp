@@ -10,7 +10,7 @@
 2. Keep the Pi extension thin and optional.
 2. Use MCP for LLM-facing KCP and code-intelligence tools.
 3. Use HTTP only where the extension must enrich a prompt before the LLM turn starts.
-4. Invoke `kcp-agent` as a CLI; do not copy its planner logic into this repository.
+4. Invoke `kcp-agent` as a CLI; consume its structured `plan --json` output and do not copy planner logic into this repository.
 5. Do not import or depend directly on Synthesis. Synthesis is an optional MCP provider.
 6. Keep automatic context bounded, relevant, and fail-open.
 7. Prefer pure functions for signal detection, query extraction, response normalization, and formatting.

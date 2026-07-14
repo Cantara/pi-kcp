@@ -4,6 +4,7 @@ import {
   extractRecallQuery,
   KCP_HELP,
   formatRecallBlock,
+  normalizePlanJson,
   parseConfig,
   parseSearchResults,
   shouldRecall,
@@ -51,6 +52,19 @@ describe("kcp-agent invocation discovery", () => {
       args: [],
       label: "/usr/local/bin/kcp-agent",
     });
+  });
+});
+
+describe("plan JSON contract", () => {
+  it("normalizes structured kcp-agent output for context", () => {
+    expect(normalizePlanJson('{"task":"deploy","selected":[]}')).toBe(
+      '{\n  "task": "deploy",\n  "selected": []\n}',
+    );
+  });
+
+  it("rejects human-formatted or non-object output", () => {
+    expect(() => normalizePlanJson("Load plan (2 units):")).toThrow("invalid --json output");
+    expect(() => normalizePlanJson("[]")).toThrow("plan JSON must be an object");
   });
 });
 

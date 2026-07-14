@@ -42,6 +42,18 @@ export interface AgentInvocation {
   label: string;
 }
 
+export function normalizePlanJson(output: string): string {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("plan JSON must be an object");
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch (error) {
+    throw new Error(`kcp-agent returned invalid --json output: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 interface SearchResponse {
   results?: unknown;
 }
@@ -295,7 +307,8 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 async function runPlan(pi: ExtensionAPI, cwd: string, intent: string, config: KcpConfig): Promise<string> {
-  return runKcpAgent(pi, cwd, ["plan", intent, "--manifest", resolve(cwd, config.manifest)], config);
+  const output = await runKcpAgent(pi, cwd, ["plan", intent, "--manifest", resolve(cwd, config.manifest), "--json"], config);
+  return normalizePlanJson(output);
 }
 
 async function runValidate(pi: ExtensionAPI, cwd: string, config: KcpConfig): Promise<string> {

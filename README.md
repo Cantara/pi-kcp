@@ -34,7 +34,7 @@ Install or load the extension, then use:
 /kcp init
 ```
 
-`/kcp recall` and `/kcp plan` add their result to the next Pi turn as a context message. Recall-shaped prompts (for example, “what did we decide about deployment?”) are augmented automatically when the local kcp-memory HTTP daemon is available. Recall failures are silent and never block a prompt.
+`/kcp recall` and `/kcp plan` add their result to the next Pi turn as a context message. Plans are requested from kcp-agent with `--json` and rejected if the response is not structured JSON. Recall-shaped prompts (for example, “what did we decide about deployment?”) are augmented automatically when the local kcp-memory HTTP daemon is available. Recall failures are silent and never block a prompt.
 
 ## Install for development
 
