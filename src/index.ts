@@ -19,6 +19,14 @@ export interface KcpConfig {
   agentCli?: string;
 }
 
+export type ConfigStatus = "defaults" | "configured" | "invalid";
+
+export interface LoadedConfig {
+  config: KcpConfig;
+  status: ConfigStatus;
+  errors: string[];
+}
+
 export interface MemorySession {
   sessionId?: string;
   projectDir?: string;
@@ -110,17 +118,65 @@ export function formatRecallBlock(query: string, sessions: MemorySession[]): str
   );
 }
 
-async function loadConfig(cwd: string): Promise<KcpConfig> {
-  try {
-    const raw = JSON.parse(await readFile(resolve(cwd, CONFIG_FILE), "utf8")) as Partial<KcpConfig>;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+export function parseConfig(value: unknown): LoadedConfig {
+  if (!isRecord(value)) {
     return {
-      ...defaultConfig,
-      ...raw,
-      maxResults: Math.min(Math.max(Number(raw.maxResults ?? DEFAULT_MAX_RESULTS), 1), 10),
-      timeoutMs: Math.min(Math.max(Number(raw.timeoutMs ?? DEFAULT_TIMEOUT_MS), 50), 5_000),
+      config: { ...defaultConfig, enabled: false, autoRecall: false },
+      status: "invalid",
+      errors: ["configuration must be a JSON object"],
     };
-  } catch {
-    return { ...defaultConfig };
+  }
+
+  const errors: string[] = [];
+  if (value.enabled !== undefined && typeof value.enabled !== "boolean") errors.push("enabled must be a boolean");
+  if (value.autoRecall !== undefined && typeof value.autoRecall !== "boolean") errors.push("autoRecall must be a boolean");
+  if (value.memoryUrl !== undefined) {
+    if (typeof value.memoryUrl !== "string") errors.push("memoryUrl must be a string");
+    else {
+      try {
+        const url = new URL(value.memoryUrl);
+        if (!['http:', 'https:'].includes(url.protocol)) errors.push("memoryUrl must use http or https");
+      } catch {
+        errors.push("memoryUrl must be a valid URL");
+      }
+    }
+  }
+  if (value.maxResults !== undefined && (!Number.isInteger(value.maxResults) || Number(value.maxResults) < 1 || Number(value.maxResults) > 10)) {
+    errors.push("maxResults must be an integer from 1 to 10");
+  }
+  if (value.timeoutMs !== undefined && (!Number.isInteger(value.timeoutMs) || Number(value.timeoutMs) < 50 || Number(value.timeoutMs) > 5_000)) {
+    errors.push("timeoutMs must be an integer from 50 to 5000");
+  }
+  if (value.manifest !== undefined && (typeof value.manifest !== "string" || value.manifest.trim() === "")) errors.push("manifest must be a non-empty string");
+  if (value.agentCli !== undefined && (typeof value.agentCli !== "string" || value.agentCli.trim() === "")) errors.push("agentCli must be a non-empty string");
+
+  if (errors.length > 0) {
+    return {
+      config: { ...defaultConfig, enabled: false, autoRecall: false },
+      status: "invalid",
+      errors,
+    };
+  }
+
+  return { config: { ...defaultConfig, ...value } as KcpConfig, status: "configured", errors: [] };
+}
+
+async function loadConfig(cwd: string): Promise<LoadedConfig> {
+  try {
+    return parseConfig(JSON.parse(await readFile(resolve(cwd, CONFIG_FILE), "utf8")));
+  } catch (error) {
+    if (isRecord(error) && error.code === "ENOENT") {
+      return { config: { ...defaultConfig }, status: "defaults", errors: [] };
+    }
+    return {
+      config: { ...defaultConfig, enabled: false, autoRecall: false },
+      status: "invalid",
+      errors: [`could not read .pi/kcp.json: ${error instanceof Error ? error.message : String(error)}`],
+    };
   }
 }
 
@@ -269,8 +325,13 @@ export default function register(pi: ExtensionAPI): void {
     description: "Use KCP memory and deterministic knowledge plans",
     handler: async (args, ctx) => {
       const [subcommand, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-      const config = await loadConfig(ctx.cwd);
-      if (!config.enabled) {
+      const loaded = await loadConfig(ctx.cwd);
+      const config = loaded.config;
+      if (loaded.status === "invalid" && subcommand !== "health") {
+        show(ctx, `Invalid .pi/kcp.json: ${loaded.errors.join("; ")} (run /kcp health for diagnostics)`, "warning");
+        return;
+      }
+      if (!config.enabled && subcommand !== "health") {
         show(ctx, "pi-kcp is disabled in .pi/kcp.json", "warning");
         return;
       }
@@ -339,7 +400,10 @@ export default function register(pi: ExtensionAPI): void {
           .then(() => "ok")
           .catch(() => "unavailable");
         const agent = await findAgentInvocation(pi, config);
-        show(ctx, `pi-kcp health\nkcp-memory: ${memory}\nkcp-agent: ${agent?.label ?? "unavailable — set agentCli or install kcp-agent"}`);
+        const configLine = loaded.status === "invalid"
+          ? `invalid — ${loaded.errors.join("; ")}`
+          : `${loaded.status}${config.enabled ? "" : " (disabled)"}`;
+        show(ctx, `pi-kcp health\nconfig: ${configLine}\nkcp-memory: ${memory}\nkcp-agent: ${agent?.label ?? "unavailable — set agentCli or install kcp-agent"}`);
         return;
       }
 
@@ -349,7 +413,7 @@ export default function register(pi: ExtensionAPI): void {
 
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") return { action: "continue" as const };
-    const config = await loadConfig(ctx.cwd);
+    const config = (await loadConfig(ctx.cwd)).config;
     const transformed = await augmentPrompt(event.text, config);
     return transformed === event.text
       ? { action: "continue" as const }

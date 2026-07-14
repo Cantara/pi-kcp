@@ -1,12 +1,17 @@
 # pi-kcp
 
-Open-source KCP ergonomics for the Pi coding-agent harness.
+Open-source KCP agent proficiency and ergonomics for the Pi coding-agent harness.
 
-`pi-kcp` makes Knowledge Context Protocol tools easy to use from Pi without replacing MCP or coupling Pi to a particular code-intelligence implementation.
+`pi-kcp` helps both the LLM and the human use Knowledge Context Protocol tools from Pi. It provides agent-facing skills and operating guidance alongside human-facing commands, without replacing MCP or coupling Pi to a particular code-intelligence implementation.
 
 ## Design
 
-The project deliberately uses separate lanes:
+The project serves two audiences through separate but complementary lanes:
+
+- **Agent-facing:** skills teach the LLM when and how to use kcp-agent, kcp-memory, kcp-harness, and optional code intelligence.
+- **Human-facing:** slash commands and diagnostics make the same capabilities explicit and inspectable.
+
+The project deliberately uses separate transport lanes:
 
 - **Pi extension:** human-facing `/kcp` commands and bounded prompt recall.
 - **kcp-memory:** HTTP for pre-prompt recall; MCP remains available for explicit LLM queries.
@@ -64,7 +69,15 @@ The extension works with conservative defaults. A project may add `.pi/kcp.json`
 }
 ```
 
-All fields are optional. `agentCli` may point to either the JavaScript CLI module or an executable command. Discovery checks the configured path, `KCP_AGENT_CLI`, the documented Homebrew/npm locations, and finally `kcp-agent` on `PATH`.
+All fields are optional. Configuration values are validated; invalid configuration disables automatic behavior and is reported by `/kcp health`. `agentCli` may point to either the JavaScript CLI module or an executable command. Discovery checks the configured path, `KCP_AGENT_CLI`, the documented Homebrew/npm locations, and finally `kcp-agent` on `PATH`.
+
+## Diagnostics
+
+```text
+/kcp health
+```
+
+The health command reports configuration state, kcp-memory availability, and kcp-agent discovery. Missing configuration uses defaults; invalid configuration fails closed for automatic recall.
 
 ## MCP configuration
 
@@ -98,6 +111,21 @@ bun run typecheck
 bun test
 bun run build
 ```
+
+Project-local Pi skills are available under `.pi/skills/`:
+
+- `pi-kcp-development` — architecture and implementation workflow;
+- `pr-evaluation` — independent Minimax M3 PR evaluation;
+- `installation-validation` — clean-install and integration validation.
+
+Run the provenance-aware PR evaluator with:
+
+```bash
+bun run pr-eval -- <PR> [<PR> ...]
+bun run pr-eval -- <PR> --comment
+```
+
+It defaults to `opencode/minimax-m3`, evaluates current diffs against linked issues, and never merges or applies governance labels.
 
 The pure recall and response-formatting functions are tested independently of a running daemon. Integration tests should use a fake local HTTP server rather than a developer's memory database.
 
