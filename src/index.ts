@@ -46,6 +46,15 @@ interface SearchResponse {
   results?: unknown;
 }
 
+export const KCP_HELP = `pi-kcp — KCP agent proficiency and ergonomics
+
+/kcp help                 Show this help
+/kcp health               Check configuration and local services
+/kcp recall <query>       Add episodic memory to the next turn
+/kcp plan <intent>        Add a deterministic knowledge plan to the next turn
+/kcp validate             Validate the project's knowledge.yaml
+/kcp init                 Create knowledge.yaml without overwriting an existing file`;
+
 const RECALL_SIGNALS = [
   /\byesterday\b/i,
   /\blast\s+(?:time|week|month)\b/i,
@@ -327,6 +336,11 @@ export default function register(pi: ExtensionAPI): void {
       const [subcommand, ...rest] = args.trim().split(/\s+/).filter(Boolean);
       const loaded = await loadConfig(ctx.cwd);
       const config = loaded.config;
+      if (subcommand === "help" || !subcommand) {
+        publish(pi, "KCP help", KCP_HELP);
+        show(ctx, KCP_HELP);
+        return;
+      }
       if (loaded.status === "invalid" && subcommand !== "health") {
         show(ctx, `Invalid .pi/kcp.json: ${loaded.errors.join("; ")} (run /kcp health for diagnostics)`, "warning");
         return;
@@ -407,7 +421,7 @@ export default function register(pi: ExtensionAPI): void {
         return;
       }
 
-      show(ctx, "Usage: /kcp <help|health|recall <query>|plan <intent>|validate|init>");
+      show(ctx, `Unknown /kcp subcommand: ${subcommand}\n\n${KCP_HELP}`, "warning");
     },
   });
 

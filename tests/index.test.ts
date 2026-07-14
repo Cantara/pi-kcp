@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import {
   agentInvocationForPath,
   extractRecallQuery,
+  KCP_HELP,
   formatRecallBlock,
   parseConfig,
   parseSearchResults,
@@ -50,6 +51,14 @@ describe("kcp-agent invocation discovery", () => {
       args: [],
       label: "/usr/local/bin/kcp-agent",
     });
+  });
+});
+
+describe("command help", () => {
+  it("documents every supported command", () => {
+    for (const command of ["/kcp help", "/kcp health", "/kcp recall", "/kcp plan", "/kcp validate", "/kcp init"]) {
+      expect(KCP_HELP).toContain(command);
+    }
   });
 });
 

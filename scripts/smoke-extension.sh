@@ -16,5 +16,9 @@ for extension in src/index.ts dist/src/index.js; do
     echo "$response" >&2
     exit 1
   fi
-  echo "ok: $extension loads and registers /kcp"
+  if ! bun -e 'const modulePath = process.argv[1]; const { KCP_HELP } = await import(modulePath); for (const command of ["/kcp help", "/kcp health", "/kcp recall", "/kcp plan", "/kcp validate", "/kcp init"]) if (!KCP_HELP.includes(command)) process.exit(1);' "./$extension"; then
+    echo "Help contract is incomplete for $extension" >&2
+    exit 1
+  fi
+  echo "ok: $extension loads, registers /kcp, and exposes complete help"
 done
