@@ -14,7 +14,15 @@ bun test
 bun run build
 ```
 
-When available, `bun run smoke` loads both `src/index.ts` and the built extension through Pi RPC mode and verifies `/kcp` registration. The smoke check must not mutate global Pi settings. Until that target is present, use the equivalent explicit Pi RPC check from the installation-validation issue.
+When available, `bun run smoke` loads both `src/index.ts` and the built extension through Pi RPC mode and verifies `/kcp` registration. The smoke check must not mutate global Pi settings.
+
+Run the full deterministic fixture harness with:
+
+```bash
+bun run validate-install
+```
+
+It creates a temporary project, fake kcp-memory HTTP service, fake kcp-agent executable, and runs `/kcp help`, `/kcp health`, `/kcp validate`, `/kcp plan`, `/kcp recall`, and safe `/kcp init` against both source and built extensions. Every Pi invocation has a hard process-group timeout.
 
 ## Service-backed checks
 

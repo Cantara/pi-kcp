@@ -47,6 +47,14 @@ pi -e ./dist/src/index.js
 
 `bun run smoke` starts Pi in RPC mode and verifies that both the TypeScript source extension and built package extension register `/kcp`. It requires `pi` and `jq` on `PATH` but no KCP daemon.
 
+For full clean-fixture validation with fake kcp-memory and kcp-agent services:
+
+```bash
+bun run validate-install
+```
+
+Every Pi process in this harness has a hard timeout and is killed as a process group.
+
 For a local source reload during development:
 
 ```bash
