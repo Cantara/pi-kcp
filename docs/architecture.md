@@ -43,6 +43,6 @@ Synthesis is treated as one possible MCP provider. The extension does not know w
 ## Deferred decisions
 
 - whether to distribute through npm, a Pi package registry, or both;
-- whether `kcp-agent` should provide a stable library/JSON interface;
+- whether `kcp-agent` should provide a stable library/JSON interface; the current CLI contract is `plan <intent> --manifest <path>`;
 - whether kcp-commands should expose a shared manifest reader for Pi;
 - whether a capability-discovery command is valuable beyond MCP's existing discovery.

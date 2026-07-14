@@ -36,6 +36,12 @@ export interface MemorySession {
   firstMessage?: string;
 }
 
+export interface AgentInvocation {
+  command: string;
+  args: string[];
+  label: string;
+}
+
 interface SearchResponse {
   results?: unknown;
 }
@@ -193,34 +199,59 @@ async function recall(memoryUrl: string, query: string, config: KcpConfig): Prom
   return parseSearchResults(await fetchJson(url.toString(), config.timeoutMs));
 }
 
-async function findAgentCli(config: KcpConfig): Promise<string | undefined> {
-  const candidates = [
-    config.agentCli,
-    process.env.KCP_AGENT_CLI,
+export function agentInvocationForPath(path: string): AgentInvocation {
+  const label = path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs")
+    ? `node ${path}`
+    : path;
+  return label.startsWith("node ")
+    ? { command: "node", args: [path], label }
+    : { command: path, args: [], label };
+}
+
+async function commandInvocation(pi: ExtensionAPI, command: string): Promise<AgentInvocation | undefined> {
+  const result = await pi.exec("which", [command], { timeout: 2_000 });
+  if (result.code !== 0) return undefined;
+  const path = result.stdout.trim().split("\\n")[0];
+  return path ? agentInvocationForPath(path) : undefined;
+}
+
+async function findAgentInvocation(pi: ExtensionAPI, config: KcpConfig): Promise<AgentInvocation | undefined> {
+  const configured = [config.agentCli, process.env.KCP_AGENT_CLI]
+    .filter((candidate): candidate is string => Boolean(candidate));
+  const knownPaths = [
     "/opt/homebrew/lib/node_modules/kcp-harness/node_modules/kcp-agent/dist/cli.js",
     `${process.env.HOME ?? ""}/.npm-global/lib/node_modules/kcp-harness/node_modules/kcp-agent/dist/cli.js`,
-  ].filter((candidate): candidate is string => Boolean(candidate));
+  ];
 
-  for (const candidate of candidates) {
+  for (const candidate of [...configured, ...knownPaths]) {
+    if (!candidate.includes("/") && !/\.(?:cjs|mjs|js)$/.test(candidate)) {
+      const invocation = await commandInvocation(pi, candidate);
+      if (invocation) return invocation;
+      continue;
+    }
     try {
       await access(candidate, constants.R_OK);
-      return candidate;
+      return agentInvocationForPath(candidate);
     } catch {
-      // Try the next known installation location.
+      // Try the next configured or known installation location.
     }
   }
-  return undefined;
+
+  return commandInvocation(pi, "kcp-agent");
+}
+
+function agentNotFoundMessage(config: KcpConfig): string {
+  const configured = config.agentCli ? ` Configured path: ${config.agentCli}.` : "";
+  return `kcp-agent CLI was not found.${configured} Set agentCli in .pi/kcp.json, set KCP_AGENT_CLI, or install the kcp-agent executable.`;
 }
 
 async function runPlan(pi: ExtensionAPI, cwd: string, intent: string, config: KcpConfig): Promise<string> {
-  const cli = await findAgentCli(config);
-  if (!cli) {
-    throw new Error("kcp-agent CLI was not found. Set agentCli in .pi/kcp.json or install kcp-agent.");
-  }
+  const invocation = await findAgentInvocation(pi, config);
+  if (!invocation) throw new Error(agentNotFoundMessage(config));
 
   const result = await pi.exec(
-    "node",
-    [cli, "plan", intent, "--manifest", resolve(cwd, config.manifest)],
+    invocation.command,
+    [...invocation.args, "plan", intent, "--manifest", resolve(cwd, config.manifest)],
     { timeout: 15_000 },
   );
   if (result.code !== 0) {
@@ -302,11 +333,11 @@ export default function register(pi: ExtensionAPI): void {
         const memory = await fetchJson(`${config.memoryUrl.replace(/\/$/, "")}/health`, config.timeoutMs)
           .then(() => "ok")
           .catch(() => "unavailable");
-        const agent = (await findAgentCli(config)) ? "found" : "unavailable";
+        const agent = await findAgentInvocation(pi, config);
         const configLine = loaded.status === "invalid"
           ? `invalid — ${loaded.errors.join("; ")}`
           : `${loaded.status}${config.enabled ? "" : " (disabled)"}`;
-        show(ctx, `pi-kcp health\nconfig: ${configLine}\nkcp-memory: ${memory}\nkcp-agent: ${agent}`);
+        show(ctx, `pi-kcp health\nconfig: ${configLine}\nkcp-memory: ${memory}\nkcp-agent: ${agent?.label ?? "unavailable — set agentCli or install kcp-agent"}`);
         return;
       }
 

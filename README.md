@@ -34,8 +34,11 @@ Install or load the extension, then use:
 ```bash
 bun install
 bun run build
-pi -e ./dist/index.js
+bun run smoke
+pi -e ./dist/src/index.js
 ```
+
+`bun run smoke` starts Pi in RPC mode and verifies that both the TypeScript source extension and built package extension register `/kcp`. It requires `pi` and `jq` on `PATH` but no KCP daemon.
 
 For a local source reload during development:
 
@@ -94,7 +97,7 @@ Example:
 }
 ```
 
-The Synthesis entry is illustrative, not a dependency or required runtime.
+The Synthesis entry is illustrative, not a dependency or required runtime. See [Optional MCP providers](docs/mcp-providers.md) for provider substitution and `directTools` guidance.
 
 ## Development
 
@@ -105,6 +108,10 @@ bun run build
 ```
 
 The pure recall and response-formatting functions are tested independently of a running daemon. Integration tests should use a fake local HTTP server rather than a developer's memory database.
+
+## kcp-commands status
+
+`kcp-commands` remains the owner of shell command manifests, injection, filtering, and its MCP bridge. The `/kcp help` command currently documents pi-kcp itself; it is not a duplicate command-manifest lookup surface. Direct manifest lookup is deferred until real Pi friction or a reusable upstream reader justifies it. See [Decision 0002](docs/decisions/0002-kcp-commands-integration.md).
 
 ## Scope boundaries
 
@@ -118,7 +125,7 @@ This project will not:
 
 ## Roadmap
 
-The initial backlog is tracked in GitHub Issues. The next likely steps are installation smoke tests, stronger CLI discovery diagnostics, configuration validation, and a fake-daemon integration test suite.
+The initial backlog is tracked in GitHub Issues. The next likely steps are configuration validation, and a fake-daemon integration test suite.
 
 ## License
 

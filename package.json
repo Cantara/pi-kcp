@@ -7,6 +7,7 @@
   "files": ["dist", "README.md", "AGENTS.md", "LICENSE"],
   "scripts": {
     "build": "tsc --outDir dist",
+    "smoke": "./scripts/smoke-extension.sh",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
