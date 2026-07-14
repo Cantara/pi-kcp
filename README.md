@@ -86,7 +86,7 @@ Example:
 }
 ```
 
-The Synthesis entry is illustrative, not a dependency or required runtime.
+The Synthesis entry is illustrative, not a dependency or required runtime. See [Optional MCP providers](docs/mcp-providers.md) for provider substitution and `directTools` guidance.
 
 ## Development
 
