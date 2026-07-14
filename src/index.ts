@@ -130,11 +130,29 @@ async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
   }
 }
 
-async function recall(memoryUrl: string, query: string, config: KcpConfig): Promise<MemorySession[]> {
+export async function recall(memoryUrl: string, query: string, config: KcpConfig): Promise<MemorySession[]> {
   const url = new URL("/search", `${memoryUrl.replace(/\/$/, "")}/`);
   url.searchParams.set("q", query);
   url.searchParams.set("limit", String(config.maxResults));
   return parseSearchResults(await fetchJson(url.toString(), config.timeoutMs));
+}
+
+export type MemoryLookup = (query: string, config: KcpConfig) => Promise<MemorySession[]>;
+
+export async function augmentPrompt(
+  prompt: string,
+  config: KcpConfig,
+  lookup: MemoryLookup = (query, currentConfig) => recall(currentConfig.memoryUrl, query, currentConfig),
+): Promise<string> {
+  if (!config.enabled || !config.autoRecall || !shouldRecall(prompt)) return prompt;
+
+  try {
+    const query = extractRecallQuery(prompt);
+    const block = formatRecallBlock(query, await lookup(query, config));
+    return block ? `${block}\n\n${prompt}` : prompt;
+  } catch {
+    return prompt;
+  }
 }
 
 async function findAgentCli(config: KcpConfig): Promise<string | undefined> {
@@ -253,19 +271,9 @@ export default function register(pi: ExtensionAPI): void {
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") return { action: "continue" as const };
     const config = await loadConfig(ctx.cwd);
-    if (!config.enabled || !config.autoRecall || !shouldRecall(event.text)) {
-      return { action: "continue" as const };
-    }
-
-    try {
-      const query = extractRecallQuery(event.text);
-      const sessions = await recall(config.memoryUrl, query, config);
-      const block = formatRecallBlock(query, sessions);
-      return block
-        ? { action: "transform" as const, text: `${block}\n\n${event.text}` }
-        : { action: "continue" as const };
-    } catch {
-      return { action: "continue" as const };
-    }
+    const transformed = await augmentPrompt(event.text, config);
+    return transformed === event.text
+      ? { action: "continue" as const }
+      : { action: "transform" as const, text: transformed };
   });
 }
