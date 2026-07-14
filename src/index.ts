@@ -192,27 +192,43 @@ async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
   }
 }
 
-async function recall(memoryUrl: string, query: string, config: KcpConfig): Promise<MemorySession[]> {
+export async function recall(memoryUrl: string, query: string, config: KcpConfig): Promise<MemorySession[]> {
   const url = new URL("/search", `${memoryUrl.replace(/\/$/, "")}/`);
   url.searchParams.set("q", query);
   url.searchParams.set("limit", String(config.maxResults));
   return parseSearchResults(await fetchJson(url.toString(), config.timeoutMs));
 }
 
+export type MemoryLookup = (query: string, config: KcpConfig) => Promise<MemorySession[]>;
+
+export async function augmentPrompt(
+  prompt: string,
+  config: KcpConfig,
+  lookup: MemoryLookup = (query, currentConfig) => recall(currentConfig.memoryUrl, query, currentConfig),
+): Promise<string> {
+  if (!config.enabled || !config.autoRecall || !shouldRecall(prompt)) return prompt;
+
+  try {
+    const query = extractRecallQuery(prompt);
+    const block = formatRecallBlock(query, await lookup(query, config));
+    return block ? `${block}\n\n${prompt}` : prompt;
+  } catch {
+    return prompt;
+  }
+}
+
 export function agentInvocationForPath(path: string): AgentInvocation {
-  const label = path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs")
-    ? `node ${path}`
-    : path;
-  return label.startsWith("node ")
-    ? { command: "node", args: [path], label }
-    : { command: path, args: [], label };
+  const isJavaScript = path.endsWith(".js") || path.endsWith(".mjs") || path.endsWith(".cjs");
+  return isJavaScript
+    ? { command: "node", args: [path], label: `node ${path}` }
+    : { command: path, args: [], label: path };
 }
 
 async function commandInvocation(pi: ExtensionAPI, command: string): Promise<AgentInvocation | undefined> {
   const result = await pi.exec("which", [command], { timeout: 2_000 });
   if (result.code !== 0) return undefined;
-  const path = result.stdout.trim().split("\\n")[0];
-  return path ? agentInvocationForPath(path) : undefined;
+  const path = result.stdout.trim();
+  return path ? agentInvocationForPath(path.split("\n")[0]) : undefined;
 }
 
 async function findAgentInvocation(pi: ExtensionAPI, config: KcpConfig): Promise<AgentInvocation | undefined> {
@@ -348,19 +364,9 @@ export default function register(pi: ExtensionAPI): void {
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") return { action: "continue" as const };
     const config = (await loadConfig(ctx.cwd)).config;
-    if (!config.enabled || !config.autoRecall || !shouldRecall(event.text)) {
-      return { action: "continue" as const };
-    }
-
-    try {
-      const query = extractRecallQuery(event.text);
-      const sessions = await recall(config.memoryUrl, query, config);
-      const block = formatRecallBlock(query, sessions);
-      return block
-        ? { action: "transform" as const, text: `${block}\n\n${event.text}` }
-        : { action: "continue" as const };
-    } catch {
-      return { action: "continue" as const };
-    }
+    const transformed = await augmentPrompt(event.text, config);
+    return transformed === event.text
+      ? { action: "continue" as const }
+      : { action: "transform" as const, text: transformed };
   });
 }
