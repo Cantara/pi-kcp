@@ -2,9 +2,37 @@ import { describe, expect, it } from "bun:test";
 import {
   extractRecallQuery,
   formatRecallBlock,
+  parseConfig,
   parseSearchResults,
   shouldRecall,
 } from "../src/index.js";
+
+describe("configuration validation", () => {
+  it("accepts a valid project configuration", () => {
+    const loaded = parseConfig({
+      enabled: false,
+      autoRecall: false,
+      memoryUrl: "http://localhost:7735",
+      maxResults: 5,
+      timeoutMs: 500,
+      manifest: "knowledge.yaml",
+    });
+    expect(loaded.status).toBe("configured");
+    expect(loaded.config.enabled).toBe(false);
+    expect(loaded.errors).toEqual([]);
+  });
+
+  it("reports invalid values and disables automatic behavior", () => {
+    const loaded = parseConfig({ memoryUrl: "not-a-url", maxResults: 99, timeoutMs: 1 });
+    expect(loaded.status).toBe("invalid");
+    expect(loaded.config.enabled).toBe(false);
+    expect(loaded.errors).toHaveLength(3);
+  });
+
+  it("distinguishes non-object configuration", () => {
+    expect(parseConfig([]).status).toBe("invalid");
+  });
+});
 
 describe("recall signal detection", () => {
   it("detects retrospective prompts", () => {

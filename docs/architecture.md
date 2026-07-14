@@ -29,6 +29,10 @@ Pi extensions currently have no MCP client API. The HTTP path for pre-prompt rec
 
 Synthesis is treated as one possible MCP provider. The extension does not know whether the provider is Synthesis, another implementation, local-only, or absent. Future Synthesis open-sourcing does not require a design change.
 
+## Configuration and diagnostics
+
+`.pi/kcp.json` is optional. Missing configuration uses defaults. Invalid configuration is reported by `/kcp health` and disables automatic behavior rather than silently applying partial values.
+
 ## Failure behavior
 
 - kcp-memory unavailable: leave the prompt unchanged.

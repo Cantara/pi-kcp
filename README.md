@@ -61,7 +61,15 @@ The extension works with conservative defaults. A project may add `.pi/kcp.json`
 }
 ```
 
-All fields are optional. `agentCli` is useful when `kcp-agent` is installed from a local checkout or in a non-standard location.
+All fields are optional. Configuration values are validated; invalid configuration disables automatic behavior and is reported by `/kcp health`. `agentCli` may point to either the JavaScript CLI module or an executable command. Discovery checks the configured path, `KCP_AGENT_CLI`, the documented Homebrew/npm locations, and finally `kcp-agent` on `PATH`.
+
+## Diagnostics
+
+```text
+/kcp health
+```
+
+The health command reports configuration state, kcp-memory availability, and kcp-agent discovery. Missing configuration uses defaults; invalid configuration fails closed for automatic recall.
 
 ## MCP configuration
 
