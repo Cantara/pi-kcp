@@ -40,9 +40,12 @@ Synthesis is treated as one possible MCP provider. The extension does not know w
 - kcp-agent unavailable: `/kcp plan` returns an actionable error; no automatic fallback planner is introduced.
 - oversized output: truncate before adding context to Pi.
 
+## Resolved decisions
+
+- `kcp-agent` provides a stable JSON interface: `plan <intent> --manifest <path> --json` emits a versioned artifact (`schemaVersion`, `kind`). The extension consumes only that contract, accepts unversioned output from older kcp-agent releases, and rejects schema versions it does not understand.
+
 ## Deferred decisions
 
 - whether to distribute through npm, a Pi package registry, or both;
-- whether `kcp-agent` should provide a stable library/JSON interface; the current CLI contract is `plan <intent> --manifest <path>`;
 - whether kcp-commands should expose a shared manifest reader for Pi;
 - whether a capability-discovery command is valuable beyond MCP's existing discovery.
