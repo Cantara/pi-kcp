@@ -6,12 +6,12 @@
   "license": "Apache-2.0",
   "files": ["dist", "README.md", "AGENTS.md", "LICENSE"],
   "scripts": {
-    "build": "tsc --outDir dist",
+    "build": "tsc -p tsconfig.build.json",
     "pr-eval": "bun scripts/pr-eval.ts",
     "smoke": "./scripts/smoke-extension.sh",
     "validate-install": "bun scripts/validate-install.ts",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test tests"
   },
   "pi": {
     "extensions": ["./dist/src/index.js"]
