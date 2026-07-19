@@ -1,0 +1,59 @@
+name: Release
+
+# Cut a release by hand: verifies the target ref, tags it, and creates a
+# GitHub release with generated notes. Mirrors the kcp-agent/kcp-harness
+# release flow minus npm publish and native binaries — pi-kcp's package
+# distribution contract is still deferred (see README).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag (e.g. v0.2.0)"
+        required: true
+      target:
+        description: "Ref to tag"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write # push the tag, create the GitHub release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build
+
+      # Idempotent: skip tag creation if it already exists (e.g. re-running
+      # after a failed later step).
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "Tag ${{ inputs.version }} already exists; skipping."
+          else
+            git tag "${{ inputs.version }}"
+            git push origin "refs/tags/${{ inputs.version }}"
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ inputs.version }}" >/dev/null 2>&1; then
+            echo "Release ${{ inputs.version }} already exists; skipping."
+          else
+            gh release create "${{ inputs.version }}" --generate-notes --title "${{ inputs.version }}"
+          fi
