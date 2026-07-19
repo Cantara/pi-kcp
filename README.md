@@ -93,6 +93,8 @@ The health command reports configuration state, kcp-memory availability, and kcp
 
 Pi should continue to expose KCP and code-intelligence servers through `.pi/mcp.json`. Keep those servers lazy and avoid direct tool injection unless there is a deliberate reason to expose every tool in the prompt.
 
+Note that stock Pi ships without an MCP client, so `.pi/mcp.json` takes effect only once an MCP client extension is installed (for example `pi install npm:pi-mcp-adapter`). This extension does not depend on MCP: `/kcp` commands and automatic recall work on stock Pi.
+
 Example:
 
 ```json

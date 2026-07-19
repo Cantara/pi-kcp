@@ -66,6 +66,11 @@ describe("plan JSON contract", () => {
     expect(() => normalizePlanJson("Load plan (2 units):")).toThrow("invalid --json output");
     expect(() => normalizePlanJson("[]")).toThrow("plan JSON must be an object");
   });
+
+  it("accepts the versioned contract and rejects unknown schema versions", () => {
+    expect(normalizePlanJson('{"schemaVersion":1,"kind":"plan","task":"deploy"}')).toContain('"schemaVersion": 1');
+    expect(() => normalizePlanJson('{"schemaVersion":2,"task":"deploy"}')).toThrow("unsupported plan schemaVersion 2");
+  });
 });
 
 describe("command help", () => {

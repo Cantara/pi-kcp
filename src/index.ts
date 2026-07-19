@@ -42,11 +42,18 @@ export interface AgentInvocation {
   label: string;
 }
 
+/** The plan --json contract this extension understands (kcp-agent stamps schemaVersion since 0.13). */
+export const SUPPORTED_PLAN_SCHEMA_VERSION = 1;
+
 export function normalizePlanJson(output: string): string {
   try {
     const parsed: unknown = JSON.parse(output);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("plan JSON must be an object");
+    }
+    const version = (parsed as { schemaVersion?: unknown }).schemaVersion;
+    if (version !== undefined && version !== SUPPORTED_PLAN_SCHEMA_VERSION) {
+      throw new Error(`unsupported plan schemaVersion ${String(version)} (this extension understands ${SUPPORTED_PLAN_SCHEMA_VERSION}; update pi-kcp or pin kcp-agent)`);
     }
     return JSON.stringify(parsed, null, 2);
   } catch (error) {
