@@ -1,10 +1,15 @@
 {
   "name": "@cantara/pi-kcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Open-source KCP ergonomics for the Pi coding-agent harness",
   "type": "module",
   "license": "Apache-2.0",
-  "files": ["dist", "README.md", "AGENTS.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "AGENTS.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "pr-eval": "bun scripts/pr-eval.ts",
@@ -14,7 +19,9 @@
     "test": "bun test tests"
   },
   "pi": {
-    "extensions": ["./dist/src/index.js"]
+    "extensions": [
+      "./dist/src/index.js"
+    ]
   },
   "engines": {
     "node": ">=20"
