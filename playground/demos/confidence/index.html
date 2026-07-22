@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — The Confident Fool</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎲</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 05 / 11 · what it concludes</span></header>
+  <h1>The Confident Fool</h1>
+  <p class="sub">An answer the model isn't sure of shouldn't ship as if it were certain. The <b>confidence gate</b> halts a shaky conclusion for a second opinion — deterministically, at a declared threshold. It runs downstream of synthesis: confidence is a property of the <em>output</em>. The model's self-report is only a <em>proposal</em>; the gate <em>adjudicates</em> with pure code — <code>score &gt;= threshold</code>, fail-closed. <b>The verdict is computed by the real <code>assess()</code> gate logic from <code>kcp-agent</code>, and signed &amp; verified with genuine <code>crypto.subtle</code> in your browser.</b></p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Dial in a self-reported <code>confidence</code> and the caller's <code>threshold</code>, then press <b>▶ Assess conclusion</b>. Drop below the line and watch the printer halt the answer for a second opinion.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="confident">✓ confident</button>
+          <button class="preset" data-preset="shaky">shaky</button>
+          <button class="preset" data-preset="edge">at the threshold</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the conclusion's self-reported certainty</h2>
+          <div class="field"><label>confidence <span class="val"><span id="confV">0.42</span></span></label><input type="range" id="confidence" min="0" max="1" step="0.01" value="0.42"></div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> caller policy · confidence gate</h2>
+          <div class="field"><label>threshold <span class="val"><span id="thV">0.70</span></span></label><input type="range" id="threshold" min="0" max="1" step="0.01" value="0.70"></div>
+          <button class="run" id="run">▶ Assess conclusion</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no verdict yet —<br>the printer is warm</div></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../grounding/">← Cite It or It Didn't Happen</a>
+      <a href="../../">All stations</a>
+      <a href="../memory/">The Forgotten Memory →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 05 of 11. Decision = the real <code>assess()</code> confidence gate from <code>kcp-agent/src/assess.ts</code> (verbatim: <code>passed = score &gt;= threshold</code>, so it PROCEEDS <em>at</em> the line and HALTS strictly below it; default aggregate <code>min</code>, fail-closed). Reason strings are lifted from the gate's own <code>detail</code>. Verdict signed &amp; verified with genuine <code>crypto.subtle</code>.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el } = KCP; KCP.initTheme();
+
+  // ---- REAL confidence gate (verbatim semantics from kcp-agent/src/assess.ts) ----
+  // Round away float noise without hiding calibration precision.
+  const round = (n) => Number(n.toFixed(6));
+  // Single self-report signal, default aggregate "min" of one signal → score === confidence.
+  // passed = score >= threshold (PROCEED at the line, HALT strictly below). Fail-closed elsewhere.
+  function assess(confidence, threshold) {
+    const self = { source: "self", score: confidence, reasoning: `self-reported: "confidence: ${confidence.toFixed(2)}"` };
+    const signals = [self];
+    const score = Math.min(...signals.map((s) => s.score)); // aggregate "min"
+    const passed = score >= threshold;
+    const lowest = signals.reduce((a, b) => (b.score < a.score ? b : a));
+    const detail = passed
+      ? `confidence ${round(score)} >= threshold ${threshold} (min of ${signals.length} signal${signals.length === 1 ? "" : "s"})`
+      : `confidence ${round(score)} < threshold ${threshold} — ${lowest.source}: ${lowest.reasoning}`;
+    return { gate: "confidence", passed, threshold, score: round(score), signals, detail };
+  }
+
+  const confidence = el("confidence"), threshold = el("threshold");
+  function sync() {
+    el("confV").textContent = Number(confidence.value).toFixed(2);
+    el("thV").textContent = Number(threshold.value).toFixed(2);
+  }
+  [confidence, threshold].forEach((x) => x.addEventListener("input", sync));
+
+  const presets = {
+    confident: { conf: 0.92, th: 0.70 }, // well clear of the line → PROCEED
+    shaky:     { conf: 0.42, th: 0.70 }, // model isn't sure → HALT for a second opinion
+    edge:      { conf: 0.70, th: 0.70 }, // exactly on the line → PROCEED (operator is >=)
+  };
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => {
+    const p = presets[b.dataset.preset];
+    confidence.value = p.conf; threshold.value = p.th;
+    sync();
+  }));
+
+  el("run").addEventListener("click", async () => {
+    const c = Number(confidence.value), t = Number(threshold.value);
+    const v = assess(c, t);
+    el("narrate").innerHTML = v.passed
+      ? `The gate <b>passed</b> — <code>${round(v.score)} &gt;= ${t}</code>. The conclusion clears the caller's bar and may be acted on.`
+      : `The gate <b>halted the conclusion</b> for a second opinion — <code>${round(v.score)} &lt; ${t}</code>. It is <b>not acted on</b>; an evaluator (or human) is asked before this ships. An answer the model isn't sure of does not go out as if it were certain.`;
+    await KCP.printReceipt(el("well"), {
+      title: "CONFIDENCE VERDICT", meta: "gate: confidence",
+      lines: [
+        { k: "confidence", v: c.toFixed(2) },
+        { k: "threshold", v: t.toFixed(2) },
+      ],
+      stampClass: v.passed ? "pass" : "block",
+      stampText: v.passed ? "✓ PROCEED" : "✗ HALT",
+      reason: v.detail,
+      footer: v.passed
+        ? [{ k: "signal", v: "self-report" }, { k: "aggregate", v: "min" }, { k: "action", v: "may be acted on" }]
+        : [{ k: "signal", v: "self-report" }, { k: "aggregate", v: "min" }, { k: "acted on", v: "NO — held for review" }],
+      payload: { confidence: c, threshold: t, verdict: { gate: "confidence", passed: v.passed, reason: v.detail } },
+    });
+  });
+  sync();
+})();
+</script>
+</body>
+</html>

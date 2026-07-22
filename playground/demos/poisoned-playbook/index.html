@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — The Poisoned Playbook</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧾</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 02 / 11 · the playbook it runs</span></header>
+  <h1>The Poisoned Playbook</h1>
+  <p class="sub">A governed playbook is signed. Before the agent runs it, KCP verifies the detached <code>ed25519</code> signature over the <b>exact published bytes</b>. If the body was tampered with after signing, the signature no longer matches and the playbook is refused — <b>fail-closed, always fatal</b>. Under <code>--require-signature</code> (strict), an <b>unsigned</b> playbook is refused too. The verdict below is the real <code>verifyManifestText</code> status + the real <code>follow()</code> gate decision, with verbatim reason wording.</p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Pick a signature state, optionally require signatures, then press <b>▶ Load playbook</b>. A tampered body never loads; an unsigned playbook loads only when strict mode is off.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="intact">✓ signed &amp; intact</button>
+          <button class="preset" data-preset="tampered">body tampered</button>
+          <button class="preset" data-preset="unsigned-strict">unsigned + strict</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> playbook · signing block</h2>
+          <div class="field"><label>signature state</label>
+            <select id="sigState">
+              <option value="valid">valid signature</option>
+              <option value="tampered">body tampered after signing</option>
+              <option value="unsigned">unsigned</option>
+            </select>
+          </div>
+          <div class="field"><label>require_signed (strict) <span class="val"><input type="checkbox" id="strict"></span></label></div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the agent wants to load</h2>
+          <div class="field"><label>playbook id <span class="val"><span id="pbId">refund-runbook@2.3.0</span></span></label></div>
+          <button class="run" id="run">▶ Load playbook</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no verdict yet —<br>the printer is warm</div></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../superseded-policy/">← The Superseded Playbook</a>
+      <a href="../../">All stations</a>
+      <a href="../out-of-bounds/">Out of Bounds →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 02 of 11. Signature verification = the real <code>verifyManifestText</code> (<code>kcp-agent/src/verify.ts</code>): a present-but-wrong signature is <code>invalid</code>; a missing one is <code>unsigned</code>. Gate = the real <code>follow()</code> decision (<code>src/follow.ts</code>): <code>invalid</code> is always fatal; under <code>--require-signature</code> anything not <code>verified</code> is refused. A browser cannot hold the project's keys, so the signature <em>state</em> is modelled — the status, gate decision, and reason wording are verbatim.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el } = KCP; KCP.initTheme();
+
+  const PB_ID = "refund-runbook@2.3.0";
+
+  // ---- REAL signature verification (verify.ts) + gate decision (follow.ts) ----
+  // verifyManifestText → {status, detail}. A browser can't hold the project's
+  // keys, so the crypto RESULT (status) is modelled per the three states; the
+  // detail strings and the follow() gate below are verbatim from source.
+  function verifyManifestText(sigState) {
+    switch (sigState) {
+      case "valid":    return { status: "verified", detail: "ed25519 signature verified (declared key)" };
+      case "tampered": return { status: "invalid",  detail: "ed25519 signature does not match manifest bytes" };
+      case "unsigned":
+      default:         return { status: "unsigned", detail: "manifest declares no signature" };
+    }
+  }
+
+  // follow.ts, verbatim gate (skill_eligibility / attestation):
+  //   if (signature.status === "invalid")  → `signature invalid: ${detail}`         (always fatal)
+  //   if (requireSignature && status !== "verified") → `signature required but ${status}: ${detail}`
+  //   else → load-eligible
+  function gate(sig, requireSignature) {
+    if (sig.status === "invalid") {
+      return { passed: false, reason: `signature invalid: ${sig.detail}` };
+    }
+    if (requireSignature && sig.status !== "verified") {
+      return { passed: false, reason: `signature required but ${sig.status}: ${sig.detail}` };
+    }
+    return { passed: true, reason: sig.detail };
+  }
+
+  const sigState = el("sigState"), strict = el("strict");
+  const stateLabel = { valid: "valid signature", tampered: "body tampered after signing", unsigned: "unsigned" };
+
+  const presets = {
+    "intact":          { state: "valid",    strict: false },
+    "tampered":        { state: "tampered", strict: false },
+    "unsigned-strict": { state: "unsigned", strict: true },
+  };
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => {
+    const p = presets[b.dataset.preset];
+    sigState.value = p.state; strict.checked = p.strict;
+  }));
+
+  el("run").addEventListener("click", async () => {
+    const sig = verifyManifestText(sigState.value);
+    const v = gate(sig, strict.checked);
+
+    el("narrate").innerHTML = v.passed
+      ? `Signature <b>${KCP.esc(sig.status)}</b> — the gate finds the playbook <b>load-eligible</b>. The agent may run it.`
+      : `The gate <b>refused the playbook</b> — <code>${KCP.esc(sig.status)}</code>. It is never loaded, never run. <b>Fail-closed.</b>`;
+
+    await KCP.printReceipt(el("well"), {
+      title: "ATTESTATION VERDICT", meta: "gate: skill_eligibility",
+      lines: [
+        { k: "playbook id", v: PB_ID },
+        { k: "signature state", v: stateLabel[sigState.value] },
+        { k: "strict?", v: strict.checked ? "require_signed" : "off" },
+      ],
+      stampClass: v.passed ? "pass" : "block",
+      stampText: v.passed ? "✓ LOADED" : "✗ REFUSED",
+      reason: v.reason,
+      footer: v.passed
+        ? [{ k: "signature.status", v: sig.status }, { k: "load-eligible", v: "true" }, { k: "runnable", v: "yes" }]
+        : [{ k: "signature.status", v: sig.status }, { k: "load-eligible", v: "false" }, { k: "runnable", v: "NEVER" }],
+      payload: { unit: PB_ID, verdict: { gate: "skill_eligibility", passed: v.passed, reason: v.reason } },
+    });
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — Cite It or It Didn't Happen</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🔖</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+<style>
+  .citerow { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .citelbl { font-family: var(--mono); font-size: 0.78rem; color: var(--faint); white-space: nowrap; }
+  .citerow select { flex: 1; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 04 / 11 · what it concludes</span></header>
+  <h1>Cite It or It Didn't Happen</h1>
+  <p class="sub">A synthesized answer is only as defendable as its weakest claim. KCP grounds every claim against the set of units the planner <b>actually loaded</b> — a claim with no supporting loaded source is surfaced as an explicit <code>gap</code>, never smoothed over, and if any gap exists the answer is <b>held</b>. <b>The verdict is computed by the real <code>groundAnswer</code> adjudication from <code>kcp-agent</code>: attribution is a proposal, membership is adjudicated</b> — a citation to a unit that was never loaded grounds nothing. Receipts are signed &amp; verified with genuine <code>crypto.subtle</code> in your browser.</p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Set the loaded sources, point each claim at one, then press <b>▶ Ground the answer</b>. Leave a claim uncited, or aim it at <code>policy-v9</code> (never loaded) — see what the printer surfaces.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="cited">✓ fully cited</button>
+          <button class="preset" data-preset="uncited">one uncited claim</button>
+          <button class="preset" data-preset="halluc">cites a source never loaded</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> loaded sources · what the planner loaded</h2>
+          <div class="field"><label>units available to cite</label>
+            <div class="chips" id="sourceChips">
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-v="policy-v3">policy-v3</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-v="ticket-88">ticket-88</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-v="handbook">handbook</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="false" data-v="sla-doc">sla-doc</span>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the answer · 3 claims</h2>
+          <div id="claims"></div>
+          <button class="run" id="run">▶ Ground the answer</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no receipt yet —<br>the printer is warm</div></div>
+        <div class="ledger"><span>claims grounded · this answer</span><span class="amt" id="ledger">— / 3</span></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../out-of-bounds/">← Out of Bounds</a>
+      <a href="../../">All stations</a>
+      <a href="../confidence/">The Confident Fool →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 04 of 11. Decision = the real <code>groundAnswer</code> logic from <code>kcp-agent/src/ground.ts</code> — the verifier only <em>proposes</em> a citation; the deterministic layer confirms the cited unit was actually loaded (and records its <code>sha256</code>). A claim citing an unloaded unit <b>fails closed as a gap</b>; any gap holds the answer. Receipt signed &amp; verified with genuine <code>crypto.subtle</code>.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el, esc } = KCP; KCP.initTheme();
+
+  // ---- source catalog: id → the loaded unit's content (sha256 computed for real) ----
+  const SOURCES = {
+    "policy-v3": "Refund policy v3: refunds are issued within 14 days of purchase.",
+    "ticket-88": "Ticket #88: status closed, resolution = resolved, refund issued.",
+    "handbook":  "Employee handbook §4.2: overtime is paid at 1.5x the base rate.",
+    "sla-doc":   "SLA: priority-1 incidents receive a first response within 1 hour.",
+  };
+  const HALLUC = "policy-v9";           // a plausible id that is NEVER in the loaded set
+  const UNCITED = "";                    // sentinel: claim cites no unit at all
+  const SHA = {};
+  const shaReady = (async () => {
+    for (const [id, content] of Object.entries(SOURCES)) {
+      const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content));
+      SHA[id] = [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+    }
+  })();
+
+  const DEFAULT_CLAIMS = [
+    "Refunds are issued within 14 days.",
+    "Ticket 88 was closed as resolved.",
+    "Overtime is paid at 1.5x the base rate.",
+  ];
+  let claims = DEFAULT_CLAIMS.map((text, i) => ({ text, cites: ["policy-v3", "ticket-88", "handbook"][i] }));
+
+  const chips = [...document.querySelectorAll("#sourceChips .chip")];
+  const loadedIds = () => chips.filter((c) => c.getAttribute("aria-pressed") === "true").map((c) => c.dataset.v);
+  const claimsWrap = el("claims");
+
+  function buildClaims() {
+    claimsWrap.innerHTML = claims.map((c, i) => `
+      <div class="field">
+        <label>claim ${i + 1}</label>
+        <input type="text" class="ctext" data-i="${i}" value="${esc(c.text)}">
+        <div class="citerow"><span class="citelbl">cites →</span><select class="ccite" data-i="${i}"></select></div>
+      </div>`).join("");
+    claimsWrap.querySelectorAll(".ctext").forEach((inp) =>
+      inp.addEventListener("input", (e) => { claims[+e.target.dataset.i].text = e.target.value; }));
+    claimsWrap.querySelectorAll(".ccite").forEach((sel) =>
+      sel.addEventListener("change", (e) => { claims[+e.target.dataset.i].cites = e.target.value; }));
+    syncSelects();
+  }
+
+  // Rebuild each claim's cites options from the *current* loaded set (+ the hallucinated
+  // id + uncited), preserving the claim's selection — even a now-unloaded (stale) id.
+  function syncSelects() {
+    const loaded = loadedIds();
+    claimsWrap.querySelectorAll(".ccite").forEach((sel) => {
+      const i = +sel.dataset.i, cur = claims[i].cites;
+      const opts = [...loaded];
+      if (!opts.includes(HALLUC)) opts.push(HALLUC);                       // always offer the hallucinated citation
+      if (cur && cur !== UNCITED && !opts.includes(cur)) opts.push(cur);   // keep a stale/unloaded selection visible
+      sel.innerHTML = opts.map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join("")
+        + `<option value="">— (uncited)</option>`;
+      sel.value = cur;
+      claims[i].cites = sel.value;
+    });
+  }
+
+  chips.forEach((c) => {
+    const t = () => { c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true"); syncSelects(); };
+    c.addEventListener("click", t);
+    c.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); t(); } });
+  });
+
+  const presets = {
+    cited:   { loaded: ["policy-v3", "ticket-88", "handbook"], cites: ["policy-v3", "ticket-88", "handbook"] },
+    uncited: { loaded: ["policy-v3", "ticket-88", "handbook"], cites: ["policy-v3", "ticket-88", UNCITED] },
+    halluc:  { loaded: ["policy-v3", "ticket-88", "handbook"], cites: ["policy-v3", "ticket-88", HALLUC] },
+  };
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => {
+    const p = presets[b.dataset.preset];
+    chips.forEach((c) => c.setAttribute("aria-pressed", p.loaded.includes(c.dataset.v) ? "true" : "false"));
+    claims = DEFAULT_CLAIMS.map((text, i) => ({ text, cites: p.cites[i] }));
+    buildClaims();
+  }));
+
+  // ---- REAL grounding adjudication (faithful to groundAnswer in kcp-agent/src/ground.ts) ----
+  // The verifier's proposed citation (`c.cites`) is only a proposal. Membership is
+  // adjudicated here against the units actually loaded; the cited unit's sha256 is recorded.
+  function ground(loadedSet, claimList) {
+    const verdicts = claimList.map((c) => {
+      const cited = c.cites === UNCITED ? null : c.cites;
+      if (cited == null)
+        return { claim: c.text, grounded: false, reason: "no loaded unit supports this claim" };
+      if (!loadedSet.has(cited))
+        return { claim: c.text, grounded: false, reason: `verifier cited unit '${cited}' that was not loaded — fail-closed` };
+      return { claim: c.text, grounded: true, unitId: cited, sha256: SHA[cited] ?? "—" };
+    });
+    const grounded = verdicts.filter((v) => v.grounded);
+    const gaps = verdicts.filter((v) => !v.grounded).map((v) => ({ claim: v.claim, reason: v.reason }));
+    return { status: gaps.length === 0 ? "grounded" : "partial-unsupported", claims: verdicts, grounded, gaps };
+  }
+
+  const short = (t) => (t.length > 32 ? t.slice(0, 31) + "…" : t) || "(empty claim)";
+
+  el("run").addEventListener("click", async () => {
+    await shaReady;
+    const loaded = new Set(loadedIds());
+    const r = ground(loaded, claims);
+    const n = r.claims.length, g = r.grounded.length, k = r.gaps.length;
+    const passed = k === 0;
+    const reason = passed
+      ? `all ${n} claims grounded — every claim pinned to a loaded, hash-pinned unit`
+      : `${g} of ${n} claims grounded; ${k} gap${k === 1 ? "" : "s"} held`;
+
+    el("ledger").textContent = `${g} / ${n}`;
+    el("narrate").innerHTML = passed
+      ? `Grounding <b>passed</b> — every claim pins to a loaded, hash-pinned unit, so the answer <b>ships</b>.`
+      : `Grounding <b>held the answer</b> — <code>${k}</code> gap${k === 1 ? "" : "s"} surfaced. An unsupported claim isn't smoothed over: the answer is held until every claim cites a source the agent actually loaded.`;
+
+    await KCP.printReceipt(el("well"), {
+      title: "GROUNDING VERDICT", meta: "gate: grounding",
+      lines: r.claims.map((v) => ({ k: short(v.claim), v: v.grounded ? "✓ " + v.unitId : "gap" })),
+      stampClass: passed ? "pass" : "block",
+      stampText: passed ? "✓ GROUNDED" : "✗ HELD",
+      reason,
+      footer: passed
+        ? [{ k: "status", v: "grounded" }, { k: "answer", v: "shipped ✓" }, { k: "gaps", v: "0" }]
+        : [{ k: "status", v: r.status }, { k: "answer", v: "HELD" }, { k: "gaps surfaced", v: String(k) }],
+      payload: { claims: r.claims, gaps: r.gaps, verdict: { gate: "grounding", passed, reason } },
+    });
+  });
+
+  buildClaims();
+})();
+</script>
+</body>
+</html>

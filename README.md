@@ -1,5 +1,11 @@
 # pi-kcp
 
+### 🧾 **[Play the interactive demos → cantara.github.io/pi-kcp/playground](https://cantara.github.io/pi-kcp/playground/)**
+
+Eleven in-browser stations that run the **real** KCP decision code live — drag the controls, watch the adjudicator re-decide, and see each verdict signed and printed as a receipt. Companion to the reveal, [*The AI Agent That Keeps the Receipts*](https://wiki.totto.org/blog/2026/07/22/the-ai-agent-that-keeps-the-receipts/).
+
+---
+
 Open-source KCP agent proficiency and ergonomics for the Pi coding-agent harness.
 
 `pi-kcp` helps both the LLM and the human use Knowledge Context Protocol tools from Pi. It provides agent-facing skills and operating guidance alongside human-facing commands, without replacing MCP or coupling Pi to a particular code-intelligence implementation.

@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — The Superseded Playbook</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧾</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 01 / 11 · the playbook it runs</span></header>
+  <h1>The Superseded Playbook</h1>
+  <p class="sub">A playbook is governed knowledge — it declares an <b>audience</b>, a <b>validity window</b>, and whether a newer version <b>supersedes</b> it. Before the agent loads one, the deterministic planner walks it through an ordered gate cascade and either <b>SELECTS</b> it or <b>SKIPS</b> it with an exact reason. Set the window, name a successor, toggle the load grant — and watch a stale playbook get refused at runtime. <b>The verdict is computed by the real planner gate logic from <code>kcp-agent</code>, and the receipt is signed &amp; verified with genuine <code>crypto.subtle</code> in your browser.</b></p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Set a playbook and a runtime clock, then press <b>▶ Evaluate playbook</b>. Let it expire, hand it a successor, or pull its load grant — see which gate speaks first.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="ok">✓ current &amp; eligible</button>
+          <button class="preset" data-preset="expired">expired</button>
+          <button class="preset" data-preset="superseded">superseded by newer</button>
+          <button class="preset" data-preset="ineligible">not load-eligible</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> skill · playbook unit</h2>
+          <div class="field"><label>unit id <span class="val" id="unitId">playbook:onboarding-emea</span></label></div>
+          <div class="field"><label>audience <span class="val">[ "agent" ]</span></label></div>
+          <div class="row2">
+            <div class="field"><label>valid_from</label><input type="date" id="validFrom"></div>
+            <div class="field"><label>valid_until</label><input type="date" id="validUntil"></div>
+          </div>
+          <div class="field"><label>superseded_by <span class="val muted2">empty = none</span></label><input type="text" id="supersededBy" placeholder="e.g. playbook:onboarding-emea@2026-q3"></div>
+          <div class="field"><label>load_eligible <span class="val">explicit invoke grant <input type="checkbox" id="loadEligible" checked></span></label></div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the runtime asks to load it</h2>
+          <div class="field"><label>evaluated as-of (today)</label><input type="date" id="asOf"></div>
+          <button class="run" id="run">▶ Evaluate playbook</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no receipt yet —<br>the printer is warm</div></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../../">← All stations</a>
+      <a href="../../">All stations</a>
+      <a href="../poisoned-playbook/">The Poisoned Playbook →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 01 of 11. Verdict = the real planner gate cascade from <code>kcp-agent/src/planner.ts</code> — <code>temporal → supersession → skill_eligibility</code>, first failing gate wins (reason wording verbatim from <code>trace.ts</code>). A skill unit fails closed: no explicit <code>load_eligible</code> grant, no invocation. Receipt signed &amp; verified with genuine <code>crypto.subtle</code>.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el } = KCP; KCP.initTheme();
+
+  // ---- REAL planner gate cascade for a single skill unit ----
+  // Faithfully lifted from kcp-agent/src/planner.ts (temporalStatus, selectableSuccessor,
+  // the skill_eligibility fail-closed gate) with reason strings verbatim from trace.ts.
+  // Evaluation order is the planner's: temporal → supersession → skill_eligibility.
+  function temporalStatus(t, asOf) {
+    if (!t) return "active";
+    if (t.valid_from && t.valid_from > asOf) return "future";   // ISO dates compare lexicographically
+    if (t.valid_until && t.valid_until < asOf) return "expired";
+    return "active";
+  }
+  function evaluate(unit, asOf) {
+    const t = unit.temporal || {};
+    // 1. temporal gate
+    const ts = temporalStatus(t, asOf);
+    if (ts === "future") {
+      return { gate: "temporal", passed: false, reason: `not active until ${t.valid_from}` };
+    }
+    if (ts === "expired") {
+      const succ = t.superseded_by ? ` (superseded by ${t.superseded_by})` : "";
+      return { gate: "temporal", passed: false, reason: `expired ${t.valid_until}${succ}` };
+    }
+    // 2. supersession gate — selectableSuccessor: a declared successor that is itself
+    // active as-of and audience-eligible SHOULD NOT let this unit be selected (spec §4.22).
+    // Single-unit model: a named successor is taken to be active & audience-eligible.
+    if (t.superseded_by) {
+      return { gate: "supersession", passed: false, reason: `superseded by ${t.superseded_by} (successor active)` };
+    }
+    // 3. skill_eligibility gate — a kind:skill unit is governed and fails closed:
+    // load/invoke-eligible only with an explicit load_eligible grant (runtime fail-closed posture).
+    if (unit.kind === "skill" && unit.load_eligible !== true) {
+      return { gate: "skill_eligibility", passed: false, reason: `kind: skill not invoke-eligible: no explicit eligibility grant` };
+    }
+    return { gate: "skill_eligibility", passed: true, reason: `kind: skill with explicit eligibility grant` };
+  }
+
+  // ---- date helpers (evergreen: everything is relative to real "today") ----
+  const iso = (d) => d.toISOString().slice(0, 10);
+  const offset = (days) => { const d = new Date(); d.setUTCDate(d.getUTCDate() + days); return iso(d); };
+
+  const validFrom = el("validFrom"), validUntil = el("validUntil"), supersededBy = el("supersededBy");
+  const loadEligible = el("loadEligible"), asOf = el("asOf");
+
+  const presets = {
+    ok:         { vf: offset(-90), vu: offset(90),  sb: "",                                    le: true,  as: offset(0) },
+    expired:    { vf: offset(-200), vu: offset(-30), sb: "",                                    le: true,  as: offset(0) },
+    superseded: { vf: offset(-90), vu: offset(90),  sb: "playbook:onboarding-emea@2026-q3",    le: true,  as: offset(0) },
+    ineligible: { vf: offset(-90), vu: offset(90),  sb: "",                                    le: false, as: offset(0) },
+  };
+  function apply(p) {
+    validFrom.value = p.vf; validUntil.value = p.vu; supersededBy.value = p.sb;
+    loadEligible.checked = p.le; asOf.value = p.as;
+  }
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => apply(presets[b.dataset.preset])));
+
+  const narrateFor = (v) => {
+    if (v.passed) return `All gates passed — the playbook is current, un-superseded, and load-eligible. The planner <b>SELECTS</b> it and it enters the load plan.`;
+    if (v.gate === "temporal") return `The <code>temporal</code> gate refused it — its validity window does not cover the runtime clock. Nothing downstream even runs; the plan records the skip and its reason.`;
+    if (v.gate === "supersession") return `Temporal passed, but the <code>supersession</code> gate refused it — a newer version supersedes it and the successor is itself selectable. The stale playbook is stood down in favour of its heir.`;
+    return `Window and supersession passed, but <code>skill_eligibility</code> <b>fails closed</b> — a governed skill unit needs an explicit <code>load_eligible</code> grant to be invoked. Absent that grant, the planner refuses to load it.`;
+  };
+
+  el("run").addEventListener("click", async () => {
+    const unit = {
+      id: el("unitId").textContent,
+      path: "playbooks/onboarding-emea.md",
+      kind: "skill",
+      audience: ["agent"],
+      temporal: {
+        valid_from: validFrom.value || undefined,
+        valid_until: validUntil.value || undefined,
+        superseded_by: supersededBy.value.trim() || undefined,
+      },
+      load_eligible: loadEligible.checked,
+    };
+    const today = asOf.value || offset(0);
+    const v = evaluate(unit, today);
+    el("narrate").innerHTML = narrateFor(v);
+
+    const window = (unit.temporal.valid_from || "—") + " → " + (unit.temporal.valid_until || "—");
+    await KCP.printReceipt(el("well"), {
+      title: "PLANNER VERDICT", meta: "gate: " + v.gate,
+      lines: [
+        { k: "unit", v: unit.id },
+        { k: "valid window", v: window },
+        { k: "as-of", v: today },
+        { k: "superseded_by", v: unit.temporal.superseded_by || "none" },
+      ],
+      stampClass: v.passed ? "pass" : "block",
+      stampText: v.passed ? "✓ SELECTED" : "✗ SKIPPED",
+      reason: v.reason,
+      footer: v.passed
+        ? [{ k: "load plan", v: "enters" }, { k: "kind", v: "skill · granted" }]
+        : [{ k: "load plan", v: "NOT loaded" }, { k: "rejected by", v: v.gate }],
+      payload: { unit, verdict: { gate: v.gate, passed: v.passed, reason: v.reason } },
+    });
+  });
+
+  apply(presets.ok);
+})();
+</script>
+</body>
+</html>

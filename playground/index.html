@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — The Agent That Keeps the Receipts</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧾</text></svg>">
+<link rel="stylesheet" href="assets/shell.css">
+<style>
+  .lede { max-width: 64ch; font-size: 1.12rem; color: var(--muted); margin: 14px 0 8px; }
+  .lede b { color: var(--ink); }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 0 8px; }
+  .cta a { font-family: var(--mono); font-size: 0.9rem; text-decoration: none; padding: 12px 18px; border-radius: 11px; }
+  .cta a.primary { background: linear-gradient(180deg, var(--brass), var(--brass-dim)); color: #201a09; font-weight: 700; border: 1px solid var(--brass-dim); }
+  .cta a.ghost { color: var(--muted); border: 1px solid var(--line); }
+  .cta a.ghost:hover { border-color: var(--brass-dim); color: var(--brass); }
+  .stations { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; margin-top: 30px; }
+  .st { display: block; text-decoration: none; color: inherit; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 16px 18px; transition: all 0.14s; }
+  .st:hover { border-color: var(--brass-dim); transform: translateY(-2px); }
+  .st .n { font-family: var(--mono); font-size: 0.72rem; color: var(--brass); letter-spacing: 0.1em; }
+  .st .organ { font-family: var(--mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--faint); float: right; }
+  .st h3 { margin: 10px 0 6px; font-size: 1.05rem; letter-spacing: -0.01em; }
+  .st p { margin: 0; font-size: 0.86rem; color: var(--muted); line-height: 1.45; }
+  .st.soon { opacity: 0.5; }
+  .st.soon:hover { transform: none; border-color: var(--line); }
+  .st.soon .organ::after { content: " · soon"; color: var(--faint); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><b>KCP</b> Playground</span></header>
+  <h1>The agent that keeps the receipts</h1>
+  <p class="lede">A defendable AI agent leaves a written, checkable <b>receipt</b> for everything it does — what it reads, the playbook it runs, what it concludes, what it does, and what it spends. Walk the whole animal, one organ at a time. <b>Every verdict below is computed live in your browser by KCP's real decision logic</b> — the same conformance, grounding, planner, confidence and compliance-export code, lifted from source — and signed so you can check it.</p>
+  <div class="cta">
+    <a class="primary" href="demos/superseded-policy/">▶ Start the tour</a>
+    <a class="ghost" href="https://wiki.totto.org/blog/2026/07/22/the-ai-agent-that-keeps-the-receipts/">Read the reveal</a>
+    <a class="ghost" href="https://github.com/Cantara">The KCP repos</a>
+  </div>
+
+  <div class="stations">
+    <a class="st" href="demos/superseded-policy/"><span class="n">01</span><span class="organ">the playbook</span><h3>The Superseded Playbook</h3><p>A stale policy is refused at runtime — with a reason. Flip its validity and watch the gate.</p></a>
+    <a class="st" href="demos/poisoned-playbook/"><span class="n">02</span><span class="organ">the playbook</span><h3>The Poisoned Playbook</h3><p>An unsigned or tampered skill is refused before it can run. Break the signature; watch it fail closed.</p></a>
+    <a class="st" href="demos/out-of-bounds/"><span class="n">03</span><span class="organ">what it does</span><h3>Out of Bounds</h3><p>Grounding for actions — a read outside the skill's declared paths is held before it executes.</p></a>
+    <a class="st" href="demos/grounding/"><span class="n">04</span><span class="organ">what it concludes</span><h3>Cite It or It Didn't Happen</h3><p>Every claim must map to a source the agent actually loaded. Unsupported ones surface as gaps.</p></a>
+    <a class="st" href="demos/confidence/"><span class="n">05</span><span class="organ">what it concludes</span><h3>The Confident Fool</h3><p>Drag the confidence past the threshold — a shaky answer is halted instead of shipped.</p></a>
+    <a class="st" href="demos/memory/"><span class="n">06</span><span class="organ">what it remembers</span><h3>The Forgotten Memory</h3><p>Retention and a right-to-forget gate what may be recalled. Expire it; watch it vanish.</p></a>
+    <a class="st" href="demos/runaway/"><span class="n">07</span><span class="organ">autonomous</span><h3>The Runaway, Contained</h3><p>Turn a loose agent loose. Two in-scope steps pass; the third hits the wall and opens a ticket.</p></a>
+    <a class="st" href="demos/shopping/"><span class="n">08</span><span class="organ">what it spends</span><h3>The Shopping Agent</h3><p>A purchase checked against a spend envelope — vendor, currency, amount — before the wallet signs.</p></a>
+    <a class="st" href="demos/two-depths/"><span class="n">09</span><span class="organ">one adjudicator</span><h3>One Verdict, Two Depths</h3><p>The same action, checked at the MCP proxy and inside the runtime loop — one shared verdict.</p></a>
+    <a class="st" href="demos/research-assistant/"><span class="n">10</span><span class="organ">the enabler</span><h3>The Research Assistant</h3><p>Bounded, an autonomous agent runs at full speed with zero blocks — and still leaves a full trail.</p></a>
+    <a class="st" href="demos/auditors-thursday/"><span class="n">11</span><span class="organ">the trail</span><h3>The Auditor's Thursday</h3><p>One run exports itself as SOC 2 / ISO 27001 / ISO 42001 / EU AI Act evidence. Press "it's Thursday."</p></a>
+  </div>
+
+  <p class="foot">Eleven interactive stations, each running KCP's real decision logic — lifted from <code>kcp-agent</code> / <code>kcp-harness</code> — in your browser and signing its verdict with genuine <code>crypto.subtle</code>. Nothing here is scripted; drag the controls and the adjudicator re-decides. (Two organs — memory and playbook-signing — are faithfully modeled where a browser can't hold the project's keys.) Apache-2.0, by <a href="https://www.exoreaction.com">eXOReaction</a> under <a href="https://github.com/Cantara">Cantara</a>. The manifesto: <a href="https://wiki.totto.org/blog/2026/07/22/your-ai-agent-just-did-something-can-you-prove-it-was-okay/">why a defendable agent</a>.</p>
+</div>
+<script src="assets/shell.js"></script>
+<script>KCP.initTheme();</script>
+</body>
+</html>

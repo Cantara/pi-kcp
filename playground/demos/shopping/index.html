@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — The Shopping Agent</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧾</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 08 / 11 · what it spends</span></header>
+  <h1>The Shopping Agent</h1>
+  <p class="sub">An autonomous agent hit a <code>402 Payment Required</code>. Before the wallet signs anything, KCP checks the purchase — <code>{vendor, amount, currency}</code> — against the skill's declared spend envelope. Set the envelope, aim a purchase at it, and watch the receipt print. <b>The verdict is computed by the real <code>checkConformance</code> spend logic, and signed &amp; verified with genuine <code>crypto.subtle</code> in your browser.</b></p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Set an envelope and a purchase, then press <b>▶ Attempt purchase</b>. Try to overspend, or aim at <code>shady-llc</code> — see what the printer says.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="ok">✓ in-scope buy</button>
+          <button class="preset" data-preset="over">overspend</button>
+          <button class="preset" data-preset="vendor">unknown vendor</button>
+          <button class="preset" data-preset="cur">wrong currency</button>
+          <button class="preset" data-preset="none">no spend authority</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> skill · action_scope.spend</h2>
+          <div class="field"><label>spend authority declared <span class="val"><input type="checkbox" id="hasSpend" checked></span></label></div>
+          <div id="spendControls">
+            <div class="field"><label>max_spend <span class="val"><span id="maxV">500</span> <span id="curLabel">USDC</span></span></label><input type="range" id="maxSpend" min="0" max="1000" step="10" value="500"></div>
+            <div class="field"><label>allowed_vendors</label>
+              <div class="chips" id="vendorChips">
+                <span class="chip" role="button" tabindex="0" aria-pressed="true" data-v="acme-data">acme-data</span>
+                <span class="chip" role="button" tabindex="0" aria-pressed="true" data-v="globex">globex</span>
+                <span class="chip" role="button" tabindex="0" aria-pressed="false" data-v="openweather">openweather</span>
+                <span class="chip" role="button" tabindex="0" aria-pressed="false" data-v="shady-llc">shady-llc</span>
+              </div>
+            </div>
+            <div class="field"><label>currency</label><select id="scopeCur"><option>USDC</option><option>EUR</option><option>USD</option></select></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the agent wants to buy</h2>
+          <div class="row2">
+            <div class="field"><label>vendor</label><select id="buyVendor"><option>acme-data</option><option>globex</option><option>openweather</option><option>shady-llc</option></select></div>
+            <div class="field"><label>currency</label><select id="buyCur"><option>USDC</option><option>EUR</option><option>USD</option></select></div>
+          </div>
+          <div class="field"><label>amount <span class="val"><span id="amtV">50</span> <span id="amtCur">USDC</span></span></label><input type="range" id="amount" min="1" max="1000" step="1" value="50"></div>
+          <button class="run" id="run">▶ Attempt purchase</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no receipt yet —<br>the printer is warm</div></div>
+        <div class="ledger"><span>session spend · settled</span><span class="amt" id="ledger">0 USDC</span></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../runaway/">← The Runaway, Contained</a>
+      <a href="../../">All stations</a>
+      <a href="../two-depths/">One Adjudicator, Two Depths →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 08 of 11. Decision = the real <code>checkConformance</code> spend logic from <code>kcp-harness</code> (verbatim: no-authority → vendor → currency → max_spend, fail-closed). On a held purchase, <code>wallet.authorize()</code> is never called. Receipt signed &amp; verified with genuine <code>crypto.subtle</code>.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el } = KCP; KCP.initTheme();
+
+  // ---- REAL conformance spend logic (verbatim from kcp-harness/src/conformance.ts) ----
+  const isNonEmpty = (a) => Array.isArray(a) && a.length > 0;
+  const spendDeclared = (s) => !!s && (typeof s.max_spend === "number" || isNonEmpty(s.allowed_vendors) || typeof s.currency === "string");
+  function checkPurchase(scope, p) {
+    const { vendor, amount, currency } = p;
+    if (!spendDeclared(scope.spend)) return { passed: false, facet: "authority", reason: `purchase of ${amount} ${currency} to "${vendor}" but the active skill declares no spend authority — fail-closed` };
+    const s = scope.spend;
+    if (isNonEmpty(s.allowed_vendors) && !s.allowed_vendors.includes(vendor)) return { passed: false, facet: "vendor", reason: `vendor "${vendor}" is outside the skill's authorized vendors [${s.allowed_vendors.join(", ")}]` };
+    if (typeof s.currency === "string" && currency !== s.currency) return { passed: false, facet: "currency", reason: `currency mismatch: purchase in ${currency}, scope allows ${s.currency}` };
+    if (typeof s.max_spend === "number" && amount > s.max_spend) return { passed: false, facet: "max_spend", reason: `purchase of ${amount} ${currency} to "${vendor}" exceeds max_spend ${s.max_spend} ${currency}` };
+    return { passed: true, facet: null, reason: `within scope — vendor allowed, ${amount} ${currency} ≤ max_spend ${s.max_spend} ${currency}` };
+  }
+
+  const maxSpend = el("maxSpend"), amount = el("amount"), hasSpend = el("hasSpend");
+  const scopeCur = el("scopeCur"), buyCur = el("buyCur"), buyVendor = el("buyVendor");
+  const chips = [...document.querySelectorAll("#vendorChips .chip")];
+  let ledger = 0;
+  const vendors = () => chips.filter((c) => c.getAttribute("aria-pressed") === "true").map((c) => c.dataset.v);
+  function sync() {
+    el("maxV").textContent = maxSpend.value; el("amtV").textContent = amount.value;
+    el("curLabel").textContent = scopeCur.value; el("amtCur").textContent = buyCur.value;
+    el("spendControls").style.opacity = hasSpend.checked ? "1" : "0.4";
+    el("spendControls").style.pointerEvents = hasSpend.checked ? "auto" : "none";
+  }
+  [maxSpend, amount, scopeCur, buyCur, buyVendor, hasSpend].forEach((x) => x.addEventListener("input", sync));
+  chips.forEach((c) => {
+    const t = () => c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true");
+    c.addEventListener("click", t);
+    c.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); t(); } });
+  });
+  const presets = {
+    ok: { max: 500, vend: ["acme-data", "globex"], scur: "USDC", bv: "acme-data", amt: 50, bcur: "USDC", has: true },
+    over: { max: 500, vend: ["acme-data", "globex"], scur: "USDC", bv: "acme-data", amt: 900, bcur: "USDC", has: true },
+    vendor: { max: 500, vend: ["acme-data", "globex"], scur: "USDC", bv: "shady-llc", amt: 50, bcur: "USDC", has: true },
+    cur: { max: 500, vend: ["acme-data", "globex"], scur: "USDC", bv: "acme-data", amt: 50, bcur: "EUR", has: true },
+    none: { max: 500, vend: ["acme-data", "globex"], scur: "USDC", bv: "acme-data", amt: 50, bcur: "USDC", has: false },
+  };
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => {
+    const p = presets[b.dataset.preset];
+    maxSpend.value = p.max; amount.value = p.amt; scopeCur.value = p.scur; buyCur.value = p.bcur; buyVendor.value = p.bv; hasSpend.checked = p.has;
+    chips.forEach((c) => c.setAttribute("aria-pressed", p.vend.includes(c.dataset.v) ? "true" : "false"));
+    sync();
+  }));
+
+  el("run").addEventListener("click", async () => {
+    const scope = { name: "data-broker", spend: hasSpend.checked ? { max_spend: Number(maxSpend.value), allowed_vendors: vendors(), currency: scopeCur.value } : undefined };
+    const purchase = { vendor: buyVendor.value, amount: Number(amount.value), currency: buyCur.value };
+    const v = checkPurchase(scope, purchase);
+    el("narrate").innerHTML = v.passed
+      ? `Conformance <b>passed</b> — the wallet signs, the 402 is retried with <code>X-PAYMENT</code>, settlement returns a signed receipt.`
+      : `Conformance <b>held the purchase</b> — deciding facet: <code>${v.facet}</code>. A <code>pending_review</code> ticket opens and <b>wallet.authorize() is never called.</b> The money does not move.`;
+    if (v.passed) ledger += purchase.amount;
+    el("ledger").textContent = ledger + " " + scopeCur.value;
+    await KCP.printReceipt(el("well"), {
+      title: "CONFORMANCE RECEIPT", meta: "gate: conformance",
+      lines: [
+        { k: "vendor", v: purchase.vendor },
+        { k: "amount", v: purchase.amount + " " + purchase.currency },
+        { k: "envelope", v: scope.spend ? "≤" + scope.spend.max_spend + " " + scope.spend.currency : "none" },
+      ],
+      stampClass: v.passed ? "pass" : "block",
+      stampText: v.passed ? "✓ SETTLED" : "✗ HELD",
+      reason: v.reason,
+      footer: v.passed
+        ? [{ k: "X-PAYMENT", v: "signed ✓" }, { k: "settlement", v: "x402 · stub" }, { k: "event", v: "purchase_settled" }]
+        : [{ k: "wallet.authorize()", v: "NOT CALLED" }, { k: "ticket", v: "pending_review" }, { k: "money moved", v: "0 " + purchase.currency }],
+      payload: { action: "purchase", purchase, scope: scope.spend ?? null, verdict: { gate: "conformance", passed: v.passed, reason: v.reason } },
+    });
+  });
+  sync();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — Out of Bounds</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🚧</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 03 / 11 · what it does</span></header>
+  <h1>Out of Bounds</h1>
+  <p class="sub">Once a skill is loaded, every governed action must stay inside the paths and tools it declared. This is <b>grounding for actions</b>: an action that touches a tool or path the skill never declared is out of scope — surfaced as a gap and <b>held before it executes</b>. Declare an <code>action_scope</code>, aim an action at it, and watch the receipt print. <b>The verdict is computed by the real <code>checkConformance</code> tool/path logic from <code>kcp-harness</code>, and signed &amp; verified with genuine <code>crypto.subtle</code> in your browser.</b></p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Set an <code>action_scope</code> and an action, then press <b>▶ Attempt action</b>. Aim a <code>read_file</code> at <code>secrets/master.key</code>, or reach for an undeclared tool — see what the printer says.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="ok">✓ in-scope read</button>
+          <button class="preset" data-preset="secret">secret path</button>
+          <button class="preset" data-preset="tool">undeclared tool</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> skill · action_scope</h2>
+          <div class="field"><label>allowed_paths</label>
+            <div class="chips" id="pathChips">
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-p="ops/">ops/</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-p="docs/">docs/</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="false" data-p="tmp/">tmp/</span>
+            </div>
+          </div>
+          <div class="field"><label>allowed_tools</label>
+            <div class="chips" id="toolChips">
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-t="read_file">read_file</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-t="list_dir">list_dir</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-t="http_get">http_get</span>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the agent wants to act</h2>
+          <div class="row2">
+            <div class="field"><label>tool</label><select id="actTool"><option>read_file</option><option>list_dir</option><option>http_get</option><option>write_file</option></select></div>
+            <div class="field"><label>target path</label><select id="actTarget"><option>ops/status.md</option><option>docs/plan.md</option><option>tmp/scratch.txt</option><option>secrets/master.key</option></select></div>
+          </div>
+          <button class="run" id="run">▶ Attempt action</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no receipt yet —<br>the printer is warm</div></div>
+        <div class="ledger"><span>actions · executed</span><span class="amt" id="ledger">0</span></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../poisoned-playbook/">← The Poisoned Playbook</a>
+      <a href="../../">All stations</a>
+      <a href="../grounding/">Cite It or It Didn't Happen →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 03 of 11. Decision = the real <code>checkConformance</code> tool/path logic from <code>kcp-harness</code> (verbatim: fail-closed no-scope → tools → paths, with <code>normalizePath</code>/<code>matchesPrefix</code> traversal-safe prefix membership). On a held action, the tool is never invoked — downstream is <b>NOT REACHED</b>. Receipt signed &amp; verified with genuine <code>crypto.subtle</code>.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el } = KCP; KCP.initTheme();
+
+  // ---- REAL conformance tool/path logic (verbatim from kcp-harness/src/conformance.ts + classifier.ts) ----
+  const isNonEmpty = (a) => Array.isArray(a) && a.length > 0;
+
+  // normalizePath — verbatim from classifier.ts: resolve ../, strip leading ./, collapse //.
+  function normalizePath(p) {
+    let n = p.replace(/\/+/g, "/");
+    if (n.startsWith("./")) n = n.slice(2);
+    const parts = n.split("/");
+    const resolved = [];
+    for (const part of parts) {
+      if (part === "..") {
+        if (resolved.length > 0 && resolved[resolved.length - 1] !== "..") {
+          resolved.pop();
+        }
+      } else if (part !== ".") {
+        resolved.push(part);
+      }
+    }
+    n = resolved.join("/");
+    return n;
+  }
+
+  // matchesPrefix — verbatim from classifier.ts: directory-boundary-aware prefix match.
+  function matchesPrefix(path, prefix) {
+    const a = path.replace(/\/+$/, "");
+    const b = prefix.replace(/\/+$/, "");
+    if (a === b) return true;
+    return a.startsWith(b + "/");
+  }
+
+  // targetInPrefixes / isUrl — verbatim from conformance.ts.
+  const isUrl = (target) => /^[a-z][a-z0-9+.-]*:\/\//i.test(target);
+  function targetInPrefixes(target, prefixes) {
+    const norm = normalizePath(target);
+    return prefixes.some(
+      (p) => matchesPrefix(norm, normalizePath(p)) || (isUrl(target) && target.startsWith(p)),
+    );
+  }
+
+  // hasScope — a scope is parseable when it declares at least one dimension (spend branch omitted for this station).
+  function hasScope(scope) {
+    if (!scope || typeof scope !== "object") return false;
+    return (
+      isNonEmpty(scope.tools) ||
+      isNonEmpty(scope.paths) ||
+      isNonEmpty(scope.capabilities)
+    );
+  }
+
+  // checkConformance — TOOLS + PATHS branch, verbatim (fail-closed no-scope → tool → path → pass).
+  function checkConformance(action, scope) {
+    // Fail-closed: an absent or unparseable scope authorizes nothing.
+    if (!hasScope(scope)) {
+      return { gate: "conformance", passed: false, facet: "scope", reason: `the active skill declares no action_scope — fail-closed; action "${action.tool}" is held for review` };
+    }
+
+    // Tool dimension — allowlist when declared.
+    if (isNonEmpty(scope.tools) && !scope.tools.includes(action.tool)) {
+      return { gate: "conformance", passed: false, facet: "tool", reason: `tool "${action.tool}" is outside the skill's authorized tools [${scope.tools.join(", ")}]` };
+    }
+
+    // Path/URL dimension — every target the action reaches must be authorized.
+    const targets = [...(action.paths ?? []), ...(action.urls ?? [])];
+    if (isNonEmpty(scope.paths)) {
+      for (const target of targets) {
+        if (!targetInPrefixes(target, scope.paths)) {
+          return { gate: "conformance", passed: false, facet: "path", reason: `target "${target}" is outside the skill's authorized paths [${scope.paths.join(", ")}]` };
+        }
+      }
+    }
+
+    return { gate: "conformance", passed: true, facet: null, reason: `action "${action.tool}"${targets.length ? ` on ${targets.join(", ")}` : ""} is within the active skill's declared action_scope` };
+  }
+
+  const actTool = el("actTool"), actTarget = el("actTarget");
+  const pathChips = [...document.querySelectorAll("#pathChips .chip")];
+  const toolChips = [...document.querySelectorAll("#toolChips .chip")];
+  let ledger = 0;
+  const pressed = (chips, attr) => chips.filter((c) => c.getAttribute("aria-pressed") === "true").map((c) => c.dataset[attr]);
+  const paths = () => pressed(pathChips, "p");
+  const tools = () => pressed(toolChips, "t");
+
+  [pathChips, toolChips].forEach((chips) => chips.forEach((c) => {
+    const t = () => c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true");
+    c.addEventListener("click", t);
+    c.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); t(); } });
+  }));
+
+  const presets = {
+    ok:     { paths: ["ops/", "docs/"], tools: ["read_file", "list_dir", "http_get"], tool: "read_file",  target: "ops/status.md" },
+    secret: { paths: ["ops/", "docs/"], tools: ["read_file", "list_dir", "http_get"], tool: "read_file",  target: "secrets/master.key" },
+    tool:   { paths: ["ops/", "docs/"], tools: ["read_file", "list_dir", "http_get"], tool: "write_file", target: "ops/status.md" },
+  };
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => {
+    const p = presets[b.dataset.preset];
+    pathChips.forEach((c) => c.setAttribute("aria-pressed", p.paths.includes(c.dataset.p) ? "true" : "false"));
+    toolChips.forEach((c) => c.setAttribute("aria-pressed", p.tools.includes(c.dataset.t) ? "true" : "false"));
+    actTool.value = p.tool; actTarget.value = p.target;
+  }));
+
+  el("run").addEventListener("click", async () => {
+    const scope = { name: "ops-runner", tools: tools(), paths: paths() };
+    const action = { tool: actTool.value, paths: [actTarget.value] };
+    const v = checkConformance(action, scope);
+    el("narrate").innerHTML = v.passed
+      ? `Conformance <b>passed</b> — <code>${KCP.esc(action.tool)}</code> on <code>${KCP.esc(action.paths[0])}</code> is inside the declared scope. The tool executes.`
+      : `Conformance <b>held the action</b> — deciding facet: <code>${v.facet}</code>. It is surfaced as a gap, a <code>pending_review</code> ticket opens, and <b>the tool is never invoked.</b> Downstream is not reached.`;
+    if (v.passed) { ledger += 1; el("ledger").textContent = ledger; }
+    await KCP.printReceipt(el("well"), {
+      title: "CONFORMANCE RECEIPT", meta: "gate: conformance",
+      lines: [
+        { k: "tool", v: action.tool },
+        { k: "target", v: action.paths[0] },
+        { k: "scope paths", v: scope.paths.length ? scope.paths.join(", ") : "none" },
+      ],
+      stampClass: v.passed ? "pass" : "block",
+      stampText: v.passed ? "✓ ALLOWED" : "✗ HELD",
+      reason: v.reason,
+      footer: v.passed
+        ? [{ k: "tool invoked", v: "yes ✓" }, { k: "event", v: "action_executed" }]
+        : [{ k: "downstream", v: "NOT REACHED" }, { k: "ticket", v: "pending_review" }],
+      payload: { action, scope: { tools: scope.tools, paths: scope.paths }, verdict: { gate: v.gate, passed: v.passed, reason: v.reason } },
+    });
+  });
+})();
+</script>
+</body>
+</html>
