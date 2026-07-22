@@ -4,9 +4,18 @@ import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { GovernedLoop } from "./governed-loop.js";
 import { type ConformanceChecker } from "./conformance.js";
+import { HarnessConformanceChecker } from "./harness-conformance.js";
 
 export { PassThroughChecker, passThroughChecker } from "./conformance.js";
 export type { ConformanceChecker, ConformanceContext, ConformanceResult, ObservedAction } from "./conformance.js";
+export {
+  HarnessConformanceChecker,
+  ManifestScopeResolver,
+  matchSkillUnit,
+  toHarnessAction,
+} from "./harness-conformance.js";
+export type { CheckConformanceFn, HarnessConformanceOptions, ScopeResolver } from "./harness-conformance.js";
+export type { ActionScope, ConformanceVerdict } from "kcp-harness";
 export { GovernedLoop } from "./governed-loop.js";
 export type { GovernanceDecision, PlanProduced } from "./governed-loop.js";
 export { childContext, isTraceparent, mintTraceparent } from "./correlation.js";
@@ -22,7 +31,11 @@ export type { SkillSelected, SkillSource } from "./skill-detection.js";
 
 /** Options for {@link register}; lets tests / embedders inject a conformance checker. */
 export interface RegisterOptions {
-  /** The conformance seam wired at the tool_call boundary (default: allow-all pass-through). */
+  /**
+   * The conformance seam wired at the tool_call boundary. Defaults to the real
+   * {@link HarnessConformanceChecker} (kcp-harness-backed, fail-closed). Inject
+   * {@link passThroughChecker} to disable enforcement, or a stub for tests.
+   */
   conformanceChecker?: ConformanceChecker;
 }
 
@@ -377,10 +390,12 @@ function publish(pi: ExtensionAPI, title: string, content: string, correlationId
 
 export default function register(pi: ExtensionAPI, options: RegisterOptions = {}): void {
   // Runtime-depth governed loop: holds the per-turn correlation id (#29), observes skill
-  // selection (#28), and gates tool calls through the conformance seam (#27, Wave 3).
-  const loop = new GovernedLoop(
-    options.conformanceChecker ? { checker: options.conformanceChecker } : {},
-  );
+  // selection (#28), and gates tool calls through the conformance seam (#27, Wave 3). The
+  // default checker is the kcp-harness-backed HarnessConformanceChecker: a real out-of-scope
+  // tool call is blocked in-loop with the harness's written reason (fail-closed).
+  const loop = new GovernedLoop({
+    checker: options.conformanceChecker ?? new HarnessConformanceChecker(),
+  });
   const getCommands = (): SlashCommandInfo[] => {
     try {
       return pi.getCommands();

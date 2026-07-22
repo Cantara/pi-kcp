@@ -4,6 +4,7 @@ import register, {
   type ConformanceChecker,
   isTraceparent,
   type ObservedAction,
+  passThroughChecker,
 } from "../src/index.js";
 
 type Handler = (event: any, ctx: any) => any;
@@ -91,9 +92,11 @@ describe("register() event wiring", () => {
     expect(isTraceparent(seen[0]!.correlationId)).toBe(true);
   });
 
-  it("allows tool calls by default (pass-through) and records skill context", async () => {
+  it("allows tool calls when a pass-through checker is injected, recording skill context", async () => {
+    // The default checker is now the fail-closed HarnessConformanceChecker; injecting the
+    // pass-through checker opts out of enforcement (and still records the skill selection).
     const pi = new FakePi();
-    register(pi.asApi());
+    register(pi.asApi(), { conformanceChecker: passThroughChecker });
     await pi.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() });
     const decision = await pi.fire(
       "tool_call",
