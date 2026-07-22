@@ -107,6 +107,9 @@ export function toHarnessAction(action: ObservedAction): HarnessObservedAction {
   const harnessAction: HarnessObservedAction = { tool: action.toolName };
   if (paths.size > 0) harnessAction.paths = [...paths];
   if (urls.size > 0) harnessAction.urls = [...urls];
+  // A purchase facet passes straight through so the harness adjudicates it against
+  // the skill's declared `spend` envelope (#139) with the same deterministic decision.
+  if (action.purchase) harnessAction.purchase = { ...action.purchase };
   return harnessAction;
 }
 

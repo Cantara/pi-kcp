@@ -19,6 +19,17 @@ export interface ObservedAction {
   readonly correlationId: string;
   /** The skill this action is being taken under, when one is active. */
   readonly skillContext?: SkillSelected;
+  /**
+   * A governed spend of value this action performs (#139) — present only for a buy: the
+   * vendor paid, the amount, and the currency. When set and the active skill declares a
+   * `spend` envelope, the purchase is adjudicated against it (vendor / currency / max_spend).
+   * Mapped through to the harness {@link ObservedAction.purchase} by `toHarnessAction`.
+   */
+  readonly purchase?: {
+    readonly vendor: string;
+    readonly amount: number;
+    readonly currency: string;
+  };
 }
 
 /** Context handed to a checker alongside the action (kept minimal and forward-compatible). */
