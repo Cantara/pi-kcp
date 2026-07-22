@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — The Runaway, Contained</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🤖</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 07 / 11 · autonomous, contained</span></header>
+  <h1>The Runaway, Contained</h1>
+  <p class="sub">Turn a loose agent loose against a governance proxy. It loads a skill, does its in-scope work — and the moment it reaches for something outside scope, a deterministic gate holds the action <b>before it executes</b> and opens a ticket. No human watching. Set the skill's scope, aim the runaway's last reach, and press run. <b>Each step's allow/block is computed by the real <code>checkConformance</code> paths/tools branch from <code>kcp-harness</code>, and the receipt is signed &amp; verified with genuine <code>crypto.subtle</code> in your browser.</b></p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Set a scope and a target, then press <b>▶ Run autonomous agent</b>. The agent steps through its plan; the gate decides each step deterministically — and halts the loop the instant one is out of scope.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="contained">contained</button>
+          <button class="preset" data-preset="clean">all in-scope</button>
+          <button class="preset" data-preset="early">blocked immediately</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> skill · docs-viewer · action_scope</h2>
+          <div class="field"><label>allowed paths</label>
+            <div class="chips" id="pathChips">
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-p="ops/">ops/</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="false" data-p="docs/">docs/</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="false" data-p="logs/">logs/</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="false" data-p="secrets/">secrets/</span>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the runaway reaches for</h2>
+          <div class="field"><label>final target <span class="val">step 4</span></label>
+            <select id="target">
+              <option value="secrets/master.key">secrets/master.key</option>
+              <option value="ops/config.yaml">ops/config.yaml</option>
+              <option value="docs/notes.md">docs/notes.md</option>
+            </select>
+          </div>
+          <button class="run" id="run">▶ Run autonomous agent</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> agent · run transcript</h2>
+          <div id="steps"><div class="verifyline">idle — no run yet</div></div>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no receipt yet —<br>the loop has not run</div></div>
+        <div class="ledger"><span>loop · status</span><span class="amt" id="ledger">standby</span></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../memory/">← The Forgotten Memory</a>
+      <a href="../../">All stations</a>
+      <a href="../shopping/">The Shopping Agent →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 07 of 11. Each step's decision = the real <code>checkConformance</code> paths/tools branch from <code>kcp-harness</code> (verbatim: fail-closed <code>hasScope</code> → tool allowlist → per-target path prefix match via <code>normalizePath</code> / <code>matchesPrefix</code>). On a held step the action never executes, the loop halts, and a <code>pending_review</code> ticket opens — no human in the loop. Receipt signed &amp; verified with genuine <code>crypto.subtle</code>.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el, esc } = KCP; KCP.initTheme();
+
+  // ---- REAL conformance logic (verbatim: PATHS/TOOLS branch of checkConformance + helpers,
+  //      from kcp-harness/src/conformance.ts and classifier.ts) ----
+  function normalizePath(p) {
+    let n = p.replace(/\/+/g, "/");
+    if (n.startsWith("./")) n = n.slice(2);
+    const parts = n.split("/");
+    const resolved = [];
+    for (const part of parts) {
+      if (part === "..") {
+        if (resolved.length > 0 && resolved[resolved.length - 1] !== "..") { resolved.pop(); }
+      } else if (part !== ".") { resolved.push(part); }
+    }
+    n = resolved.join("/");
+    return n;
+  }
+  function matchesPrefix(path, prefix) {
+    const a = path.replace(/\/+$/, "");
+    const b = prefix.replace(/\/+$/, "");
+    if (a === b) return true;
+    return a.startsWith(b + "/");
+  }
+  const isNonEmpty = (a) => Array.isArray(a) && a.length > 0;
+  function isUrl(target) { return /^[a-z][a-z0-9+.-]*:\/\//i.test(target); }
+  function targetInPrefixes(target, prefixes) {
+    const norm = normalizePath(target);
+    return prefixes.some((p) => matchesPrefix(norm, normalizePath(p)) || (isUrl(target) && target.startsWith(p)));
+  }
+  function hasScope(scope) {
+    if (!scope || typeof scope !== "object") return false;
+    return isNonEmpty(scope.tools) || isNonEmpty(scope.paths) || isNonEmpty(scope.capabilities);
+  }
+  function checkConformance(action, scope) {
+    if (!hasScope(scope)) {
+      return { gate: "conformance", passed: false, reason: `the active skill declares no action_scope — fail-closed; action "${action.tool}" is held for review` };
+    }
+    if (isNonEmpty(scope.tools) && !scope.tools.includes(action.tool)) {
+      return { gate: "conformance", passed: false, reason: `tool "${action.tool}" is outside the skill's authorized tools [${scope.tools.join(", ")}]` };
+    }
+    const targets = [...(action.paths ?? []), ...(action.urls ?? [])];
+    if (isNonEmpty(scope.paths)) {
+      for (const target of targets) {
+        if (!targetInPrefixes(target, scope.paths)) {
+          return { gate: "conformance", passed: false, reason: `target "${target}" is outside the skill's authorized paths [${scope.paths.join(", ")}]` };
+        }
+      }
+    }
+    return { gate: "conformance", passed: true, reason: `action "${action.tool}"${targets.length ? ` on ${targets.join(", ")}` : ""} is within the active skill's declared action_scope` };
+  }
+
+  // ---- controls ----
+  const chips = [...document.querySelectorAll("#pathChips .chip")];
+  const targetSel = el("target"), runBtn = el("run"), stepsEl = el("steps");
+  const allowedPaths = () => chips.filter((c) => c.getAttribute("aria-pressed") === "true").map((c) => c.dataset.p);
+  chips.forEach((c) => {
+    const t = () => c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true");
+    c.addEventListener("click", t);
+    c.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); t(); } });
+  });
+
+  const presets = {
+    contained: { paths: ["ops/"], target: "secrets/master.key" },
+    clean: { paths: ["ops/"], target: "ops/config.yaml" },
+    early: { paths: ["docs/"], target: "secrets/master.key" },
+  };
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => {
+    const p = presets[b.dataset.preset];
+    chips.forEach((c) => c.setAttribute("aria-pressed", p.paths.includes(c.dataset.p) ? "true" : "false"));
+    targetSel.value = p.target;
+  }));
+
+  // ---- the scripted autonomous plan ----
+  function buildScript() {
+    const target = targetSel.value;
+    return [
+      { action: "load skill docs-viewer", tool: "Skill", load: true },
+      { action: "read_file ops/status.md", tool: "read_file", paths: ["ops/status.md"] },
+      { action: "read_file ops/deploy.log", tool: "read_file", paths: ["ops/deploy.log"] },
+      { action: "read_file " + target, tool: "read_file", paths: [target] },
+    ];
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  function renderStep(action, passed) {
+    const d = document.createElement("div");
+    d.className = "verifyline";
+    d.innerHTML = esc(action) + " · " + (passed ? '<b class="ok">✓ allowed</b>' : '<b class="no">✗ BLOCKED</b>');
+    stepsEl.appendChild(d);
+  }
+
+  runBtn.addEventListener("click", async () => {
+    runBtn.disabled = true;
+    stepsEl.innerHTML = "";
+    el("ledger").textContent = "running…";
+    el("narrate").innerHTML = `The agent is running unattended — stepping through its plan against skill <code>docs-viewer</code> (scope <code>paths [${esc(allowedPaths().join(", ") || "∅")}]</code>). The gate decides each step before it executes.`;
+
+    const scope = { name: "docs-viewer", paths: allowedPaths() };
+    const script = buildScript();
+    const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const results = [];
+    let blockedAt = null;
+    for (let i = 0; i < script.length; i++) {
+      const step = script[i];
+      if (!reduce) await sleep(450);
+      let v;
+      if (step.load) {
+        v = { passed: true, reason: `skill loaded · action_scope = paths [${scope.paths.join(", ") || "∅"}]` };
+      } else {
+        v = checkConformance({ tool: step.tool, paths: step.paths }, scope);
+      }
+      results.push({ action: step.action, passed: v.passed, reason: v.reason });
+      renderStep(step.action, v.passed);
+      if (!v.passed) { blockedAt = i; break; }
+    }
+
+    const blocked = blockedAt !== null;
+    const blockingReason = blocked ? results[blockedAt].reason : null;
+    const overallReason = blocked ? blockingReason : `all ${results.length} actions in scope`;
+
+    el("ledger").textContent = blocked ? "contained" : "clean run";
+    el("narrate").innerHTML = blocked
+      ? `The gate <b>held step ${blockedAt + 1}</b> before it executed — <code>${esc(blockingReason)}</code>. The loop halts, a <code>pending_review</code> ticket opens, and the chain is reconstructed for a reviewer. <b>No human was watching; the containment was deterministic.</b>`
+      : `The agent finished on its own — <b>all ${results.length} actions stayed within the skill's declared scope</b>. Nothing was held.`;
+
+    await KCP.printReceipt(el("well"), {
+      title: "AUTONOMOUS RUN", meta: "gate: conformance · loop",
+      lines: results.map((r) => ({ k: r.action, v: r.passed ? "✓" : "✗" })),
+      stampClass: blocked ? "block" : "pass",
+      stampText: blocked ? "✗ CONTAINED" : "✓ CLEAN RUN",
+      reason: overallReason,
+      footer: blocked
+        ? [{ k: "ticket", v: "pending_review" }, { k: "chain", v: "reconstructed" }]
+        : null,
+      payload: {
+        action: "autonomous_run",
+        skill: "docs-viewer",
+        scope: { paths: scope.paths },
+        steps: results,
+        blockedAt,
+        verdict: { gate: "conformance", passed: !blocked, reason: overallReason },
+      },
+    });
+
+    runBtn.disabled = false;
+  });
+})();
+</script>
+</body>
+</html>

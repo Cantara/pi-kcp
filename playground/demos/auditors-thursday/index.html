@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — The Auditor's Thursday</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🗂️</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 11 / 11 · the trail</span></header>
+  <h1>The Auditor's Thursday</h1>
+  <p class="sub">Nobody writes the compliance report — operating the agent <b>is</b> writing it. Every governance decision already landed in the append-only audit log. The auditor asks for a framework; you take one run's events, exactly as they stand, and export them. Toggle the events this run produced, pick the framework, and press export. <b>The audit-event → control mapping is the real <code>buildControlEvidence</code> predicates lifted verbatim from <code>kcp-harness/src/export.ts</code> — the same control IDs an auditor would receive.</b></p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Toggle the events one run produced, pick the framework the auditor asked for, then press <b>▶ It's Thursday — export</b>. Which controls light up is decided by the real <code>export.ts</code> mapping — nothing is invented.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="soc2">SOC 2 · full run</button>
+          <button class="preset" data-preset="iso27001">ISO 27001 · full run</button>
+          <button class="preset" data-preset="iso42001">ISO 42001 · full run</button>
+          <button class="preset" data-preset="euaiact">EU AI Act · full run</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the run · audit events</h2>
+          <div id="events">
+            <div class="field"><label>session_start · session boundary opens <span class="val"><input type="checkbox" name="ev_session_start" data-ev="session_start" checked></span></label></div>
+            <div class="field"><label>tool_call · governed source read (signed) <span class="val"><input type="checkbox" name="ev_tool_read" data-ev="tool_read" checked></span></label></div>
+            <div class="field"><label>tool_call · plan-first write (pre-authorized) <span class="val"><input type="checkbox" name="ev_plan_first" data-ev="plan_first" checked></span></label></div>
+            <div class="field"><label>skill_loaded · governed skill passed eligibility <span class="val"><input type="checkbox" name="ev_skill_loaded" data-ev="skill_loaded" checked></span></label></div>
+            <div class="field"><label>skill_skipped · skill failed eligibility (fail-closed) <span class="val"><input type="checkbox" name="ev_skill_skipped" data-ev="skill_skipped"></span></label></div>
+            <div class="field"><label>conformance_verdict · action checked vs action_scope <span class="val"><input type="checkbox" name="ev_conformance_verdict" data-ev="conformance_verdict" checked></span></label></div>
+            <div class="field"><label>confidence_verdict · output adjudicated vs threshold <span class="val"><input type="checkbox" name="ev_confidence_verdict" data-ev="confidence_verdict" checked></span></label></div>
+            <div class="field"><label>approval_requested · human approval ticket opened <span class="val"><input type="checkbox" name="ev_approval_requested" data-ev="approval_requested" checked></span></label></div>
+            <div class="field"><label>approval_resolved · named reviewer approved <span class="val"><input type="checkbox" name="ev_approval_resolved" data-ev="approval_resolved" checked></span></label></div>
+            <div class="field"><label>temporal_drift · plan drift detected <span class="val"><input type="checkbox" name="ev_temporal_drift" data-ev="temporal_drift"></span></label></div>
+            <div class="field"><label>plan_invalidated · plan invalidated by drift <span class="val"><input type="checkbox" name="ev_plan_invalidated" data-ev="plan_invalidated"></span></label></div>
+            <div class="field"><label>budget_exceeded · spend rejected at ceiling <span class="val"><input type="checkbox" name="ev_budget_exceeded" data-ev="budget_exceeded"></span></label></div>
+            <div class="field"><label>purchase_settled · governed buy settled (#139) <span class="val"><input type="checkbox" name="ev_purchase_settled" data-ev="purchase_settled" checked></span></label></div>
+            <div class="field"><label>session_end · session boundary closes <span class="val"><input type="checkbox" name="ev_session_end" data-ev="session_end" checked></span></label></div>
+          </div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the auditor asks for</h2>
+          <div class="field"><label>framework</label>
+            <select id="framework">
+              <option value="soc2">SOC 2 Type II (Trust Services Criteria)</option>
+              <option value="iso27001">ISO 27001 Annex A</option>
+              <option value="iso42001">ISO/IEC 42001 (AI Management System)</option>
+              <option value="euaiact">EU AI Act (Art. 12 / Art. 14)</option>
+            </select>
+          </div>
+          <button class="run" id="run">▶ It's Thursday — export</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no bundle yet —<br>the printer is warm</div></div>
+        <div class="ledger"><span>events in this run</span><span class="amt" id="ledger">0 selected</span></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../research-assistant/">← The Research Assistant</a>
+      <a href="../../">All stations</a>
+      <a href="../../">Back to start ↩</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 11 of 11 — the finale. The evidence bundle is produced by the real <code>buildControlEvidence(id, name, description, events, predicate, detailFn)</code> from <code>kcp-harness/src/export.ts</code>: the control IDs, names, and audit-event → control predicates for <code>exportSOC2</code>, <code>exportISO27001</code>, <code>exportISO42001</code> and <code>exportEUAIAct</code> are lifted verbatim. Nobody wrote the report — the run wrote it.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el } = KCP; KCP.initTheme();
+
+  // ---- The run's audit events, one per toggle. Real AuditEvent shapes from
+  //      kcp-harness/src/audit.ts (type + outcome + the sub-object each predicate reads). ----
+  const EVENTS = {
+    session_start:       { type: "session_start", outcome: "pass-through" },
+    tool_read:           { type: "tool_call", outcome: "approved", toolCall: { name: "Read", args: { path: "src/governor.ts" } }, classification: { governed: true, reason: "governed source read", target: "src/governor.ts" }, governance: { reason: "read permitted by policy" }, signature: { status: "verified", detail: "manifest ed25519" } },
+    plan_first:          { type: "tool_call", outcome: "approved", toolCall: { name: "Edit", args: { path: "src/config.ts" } }, classification: { governed: true, reason: "write under plan-first", target: "src/config.ts" }, governance: { mode: "plan-first", reason: "pre-authorized via approved plan", approvedPlan: { task: "refactor config loader" } } },
+    skill_loaded:        { type: "skill_loaded", outcome: "approved", skill: { id: "compliance-export", eligible: true, gate: "skill_eligibility", reason: "manifest trusted, action_scope satisfied" } },
+    skill_skipped:       { type: "skill_skipped", outcome: "blocked", skill: { id: "shell-exec", eligible: false, gate: "skill_eligibility", reason: "capability not declared — fail-closed" } },
+    conformance_verdict: { type: "conformance_verdict", outcome: "approved", conformance: { skillId: "compliance-export", passed: true, reason: "action within declared action_scope", tool: "Write", target: "evidence/" } },
+    confidence_verdict:  { type: "confidence_verdict", outcome: "approved", confidence: { task: "summarize-contract", passed: true, score: 0.91, threshold: 0.8, detail: "above threshold" } },
+    approval_requested:  { type: "approval_requested", outcome: "pass-through", approval: { id: "APR-1", state: "pending", toolName: "Bash", requiredRole: "sre" } },
+    approval_resolved:   { type: "approval_resolved", outcome: "approved", approval: { id: "APR-1", state: "approved", reviewer: "selina", policyRef: "POL-7" } },
+    temporal_drift:      { type: "temporal_drift", outcome: "pass-through", drift: { manifest: "plan.yaml", summary: "upstream dependency moved" } },
+    plan_invalidated:    { type: "plan_invalidated", outcome: "blocked", drift: { manifest: "plan.yaml", summary: "plan no longer valid after drift" } },
+    budget_exceeded:     { type: "budget_exceeded", outcome: "blocked", budget: { totals: { USDC: 120 }, ceiling: { amount: 100 } } },
+    purchase_settled:    { type: "purchase_settled", outcome: "approved", purchase: { vendor: "acme-data", amount: 50, currency: "USDC", receipt: "RCP-9", signed: true } },
+    session_end:         { type: "session_end", outcome: "pass-through" },
+  };
+
+  // ---- REAL control → predicate mapping, verbatim from kcp-harness/src/export.ts ----
+  // (buildControlEvidence(controlId, controlName, description, events, predicate, detailFn))
+  const FRAMEWORKS = {
+    soc2: {
+      name: "SOC 2 Type II",
+      controls: [
+        { id: "CC6.1", name: "Logical and Physical Access Controls", pred: (e) => e.type === "tool_call" && e.classification?.governed === true },
+        { id: "CC6.3", name: "Authorized Access", pred: (e) => (e.type === "tool_call" && e.governance?.mode === "plan-first") || e.type === "approval_resolved" },
+        { id: "CC6.6", name: "System Boundaries", pred: (e) => e.type === "tool_call" },
+        { id: "CC7.2", name: "Monitoring Activities", pred: (_e) => true },
+        { id: "CC8.1", name: "Change Management", pred: (e) => e.type === "temporal_drift" || e.type === "plan_invalidated" },
+      ],
+    },
+    iso27001: {
+      name: "ISO 27001 Annex A",
+      controls: [
+        { id: "A.8.3", name: "Information Access Restriction", pred: (e) => e.type === "tool_call" && e.classification?.governed === true },
+        { id: "A.8.4", name: "Access to Source Code", pred: (e) => e.type === "tool_call" && e.classification?.governed === true && (e.toolCall?.name === "Read" || e.toolCall?.name === "Glob" || e.toolCall?.name === "Grep") },
+        { id: "A.8.15", name: "Logging", pred: (e) => e.type === "session_start" || e.type === "session_end" },
+        { id: "A.8.16", name: "Monitoring Activities", pred: (e) => e.type === "temporal_drift" || e.type === "budget_exceeded" || e.outcome === "blocked" || e.type === "approval_requested" || e.type === "confidence_verdict" },
+        { id: "A.5.23", name: "Information Security for Use of Cloud Services", pred: (e) => e.type === "tool_call" && e.signature !== undefined },
+      ],
+    },
+    iso42001: {
+      name: "ISO/IEC 42001",
+      controls: [
+        { id: "A.6.2.6", name: "AI System Operation and Monitoring", pred: (e) => e.type === "temporal_drift" || e.type === "budget_exceeded" || e.outcome === "blocked" },
+        { id: "A.6.2.8", name: "AI System Recording of Event Logs", pred: (e) => e.type === "session_start" || e.type === "session_end" },
+        { id: "A.9.2", name: "Processes for Responsible Use of AI Systems", pred: (e) => (e.type === "tool_call" && e.classification?.governed === true) || e.type === "skill_loaded" || e.type === "skill_skipped" || e.type === "conformance_verdict" },
+        { id: "A.6.2.2", name: "AI System Impact — Skill Invocation Control", pred: (e) => e.type === "skill_loaded" || e.type === "skill_skipped" },
+        { id: "A.9.4", name: "Human Oversight of AI Systems", pred: (e) => e.type === "approval_requested" || e.type === "approval_resolved" },
+        { id: "A.6.2.4", name: "AI System Verification and Validation", pred: (e) => e.type === "confidence_verdict" },
+      ],
+    },
+    euaiact: {
+      name: "EU AI Act",
+      controls: [
+        { id: "Art.12(1)", name: "Record-Keeping — Automatic Logging", pred: (_e) => true },
+        { id: "Art.12(2)", name: "Record-Keeping — Traceability of Operation", pred: (e) => e.type === "session_start" || e.type === "session_end" || e.type === "temporal_drift" || e.type === "plan_invalidated" || e.type === "skill_loaded" || e.type === "skill_skipped" },
+        { id: "Art.14(1)", name: "Human Oversight — Approval Gates", pred: (e) => e.type === "approval_requested" || e.type === "approval_resolved" },
+        { id: "Art.14(4)", name: "Human Oversight — Intervention and Stop", pred: (e) => e.outcome === "blocked" || e.type === "budget_exceeded" || e.type === "plan_invalidated" || e.type === "conformance_verdict" },
+        { id: "Art.14(4)(c)", name: "Human Oversight — Output Interpretation", pred: (e) => e.type === "confidence_verdict" },
+      ],
+    },
+  };
+
+  const boxes = [...document.querySelectorAll("#events input[type=checkbox]")];
+  const framework = el("framework");
+  const selectedKeys = () => boxes.filter((b) => b.checked).map((b) => b.dataset.ev);
+  // Build the run's event stream (real AuditEvent shapes, sequenced + timestamped).
+  function buildRun() {
+    const base = Date.now();
+    return selectedKeys().map((k, i) => Object.assign(
+      { timestamp: new Date(base + i * 1000).toISOString(), sessionId: "run-2026-07-thu", sequence: i + 1 },
+      EVENTS[k],
+    ));
+  }
+  function sync() {
+    el("ledger").textContent = selectedKeys().length + " selected";
+  }
+  boxes.forEach((b) => b.addEventListener("change", sync));
+  framework.addEventListener("change", sync);
+
+  document.querySelectorAll(".preset").forEach((p) => p.addEventListener("click", () => {
+    // Full run: every event this framework can be evidenced from.
+    boxes.forEach((b) => (b.checked = true));
+    framework.value = p.dataset.preset;
+    sync();
+  }));
+
+  el("run").addEventListener("click", async () => {
+    const run = buildRun();
+    const fw = FRAMEWORKS[framework.value];
+    // Apply the real predicates — a control is satisfied when >=1 event matches.
+    const satisfied = fw.controls
+      .map((c) => ({ id: c.id, name: c.name, evidenceCount: run.filter(c.pred).length }))
+      .filter((c) => c.evidenceCount > 0);
+    const passed = satisfied.length > 0;
+
+    el("narrate").innerHTML = passed
+      ? `Exported <b>${run.length}</b> audit event${run.length === 1 ? "" : "s"} into <b>${KCP.esc(fw.name)}</b> — <b>${satisfied.length}</b> control${satisfied.length === 1 ? "" : "s"} evidenced. Nobody wrote a word of it: the run <b>is</b> the report.`
+      : `<b>No control matched.</b> These events carry no evidence an auditor recognises under <b>${KCP.esc(fw.name)}</b> — the bundle exports empty. Toggle events the framework's <code>export.ts</code> predicates actually read.`;
+
+    await KCP.printReceipt(el("well"), {
+      title: "EVIDENCE BUNDLE",
+      meta: fw.name,
+      lines: passed
+        ? satisfied.map((c) => ({ k: c.id, v: "✓ evidenced" }))
+        : [{ k: "controls", v: "none satisfied" }],
+      stampClass: passed ? "pass" : "block",
+      stampText: passed ? "✓ EXPORTED" : "✗ NO EVIDENCE",
+      reason: passed
+        ? `${satisfied.length} control${satisfied.length === 1 ? "" : "s"} evidenced from ${run.length} event${run.length === 1 ? "" : "s"} — mapping per real buildControlEvidence predicates`
+        : `0 controls evidenced from ${run.length} event${run.length === 1 ? "" : "s"} — nothing to attest`,
+      footer: [{ k: "format", v: fw.name }],
+      payload: { framework: framework.value, events: run, controls: satisfied },
+    });
+  });
+
+  sync();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — The Research Assistant</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>📚</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 10 / 11 · the enabler</span></header>
+  <h1>The Research Assistant</h1>
+  <p class="sub">Governance isn't a brake. A read-only research skill runs a whole plan — recall, load governed sources, summarise, remember — at <b>full speed with zero blocks</b>, and every step still lands in the audit chain. When a skill is <em>bounded</em>, the adjudicator has nothing to stop, so the agent just runs — and you still get a receipt for every action. <b>Each “allowed” is computed by the real <code>checkConformance</code> tools/paths logic from <code>kcp-harness</code>, and the run is signed &amp; verified with genuine <code>crypto.subtle</code>.</b></p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Press <b>▶ Run research</b>. The skill declares a read-only <code>action_scope</code>, so every step it plans is already in-bounds — watch it run clean, then read the audit chain. Flip <b>let it try to write</b> to see the one guardrail bite.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="pure">pure research</button>
+          <button class="preset" data-preset="write">tries to write</button>
+        </div>
+
+        <div class="card">
+          <h2><span class="dot"></span> skill · action_scope.read_only</h2>
+          <div class="field"><label>authorized tools <span class="val" style="font-size:0.8rem">read-only</span></label>
+            <div class="chips" aria-hidden="true">
+              <span class="chip" aria-pressed="true">kcp_recall</span>
+              <span class="chip" aria-pressed="true">kcp_load</span>
+              <span class="chip" aria-pressed="true">Read</span>
+              <span class="chip" aria-pressed="true">synthesis_summarize</span>
+              <span class="chip" aria-pressed="true">kcp_remember</span>
+            </div>
+          </div>
+          <div class="field"><label>authorized paths</label>
+            <div class="chips" aria-hidden="true">
+              <span class="chip" aria-pressed="true">docs/</span>
+              <span class="chip" aria-pressed="true">kcp/knowledge/</span>
+              <span class="chip" aria-pressed="true">kcp/memory/</span>
+            </div>
+          </div>
+          <div class="field" style="margin-top:4px"><label>let it try to write <span class="val"><input type="checkbox" id="tryWrite"></span></label></div>
+        </div>
+
+        <div class="card">
+          <h2><span class="dot"></span> sources to consult</h2>
+          <div class="field"><label>governed sources this run <span class="val" id="srcCount">2 selected</span></label>
+            <div class="chips" id="srcChips">
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-v="docs/compliance/iso-27001.md">iso-27001.md</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-v="kcp/knowledge/evidence-log.md">evidence-log.md</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="false" data-v="docs/policy/data-retention.md">data-retention.md</span>
+            </div>
+          </div>
+          <div class="row2">
+            <input type="text" id="addSrc" placeholder="add a source to consult…" aria-label="new source name">
+            <button class="preset" id="addBtn" style="border-radius:9px">+ add source</button>
+          </div>
+          <p class="foot" style="margin-top:12px;padding-top:12px">Every source you add lands under <code>kcp/knowledge/</code> — inside the read-only scope. That's the point: within the skill's bounds, more work just means more clean receipts.</p>
+        </div>
+
+        <div class="card">
+          <h2><span class="dot"></span> the plan</h2>
+          <div id="plan"><div class="empty" style="padding:34px 10px">no run yet —<br>the skill is loaded &amp; bounded</div></div>
+          <button class="run" id="run">▶ Run research</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no receipt yet —<br>the printer is warm</div></div>
+        <div class="ledger"><span>audit chain · last run</span><span class="amt" id="audit">governed:0 blocked:0 tickets:0</span></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../two-depths/">← One Verdict, Two Depths</a>
+      <a href="../../">All stations</a>
+      <a href="../auditors-thursday/">The Auditor's Thursday →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 10 of 11. Each step's verdict = the real <code>checkConformance</code> tools/paths logic from <code>kcp-harness</code> (verbatim: fail-closed <code>hasScope</code> → tool allowlist → path-prefix with <code>normalizePath</code>/<code>matchesPrefix</code>). A read-only skill's actions all fall inside its declared scope, so all pass — and every one is still checked, stamped, and signed. The write action is the lone out-of-scope tool; when attempted it's held. Run record signed &amp; verified with genuine <code>crypto.subtle</code>.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el, esc } = KCP; KCP.initTheme();
+
+  // ---- REAL conformance tools/paths logic (verbatim from kcp-harness) ----
+  // classifier.ts: normalizePath + matchesPrefix
+  function normalizePath(p) {
+    let n = p.replace(/\/+/g, "/");
+    if (n.startsWith("./")) n = n.slice(2);
+    const parts = n.split("/");
+    const resolved = [];
+    for (const part of parts) {
+      if (part === "..") {
+        if (resolved.length > 0 && resolved[resolved.length - 1] !== "..") resolved.pop();
+      } else if (part !== ".") resolved.push(part);
+    }
+    return resolved.join("/");
+  }
+  function matchesPrefix(path, prefix) {
+    const a = path.replace(/\/+$/, ""), b = prefix.replace(/\/+$/, "");
+    if (a === b) return true;
+    return a.startsWith(b + "/");
+  }
+  // conformance.ts
+  const isNonEmpty = (a) => Array.isArray(a) && a.length > 0;
+  function hasScope(scope) {
+    if (!scope || typeof scope !== "object") return false;
+    return isNonEmpty(scope.tools) || isNonEmpty(scope.paths) || isNonEmpty(scope.capabilities);
+  }
+  const isUrl = (t) => /^[a-z][a-z0-9+.-]*:\/\//i.test(t);
+  function targetInPrefixes(target, prefixes) {
+    const norm = normalizePath(target);
+    return prefixes.some((p) => matchesPrefix(norm, normalizePath(p)) || (isUrl(target) && target.startsWith(p)));
+  }
+  function checkConformance(action, scope) {
+    if (!hasScope(scope)) return { gate: "conformance", passed: false, reason: `the active skill declares no action_scope — fail-closed; action "${action.tool}" is held for review` };
+    if (isNonEmpty(scope.tools) && !scope.tools.includes(action.tool)) return { gate: "conformance", passed: false, reason: `tool "${action.tool}" is outside the skill's authorized tools [${scope.tools.join(", ")}]` };
+    const targets = [...(action.paths ?? []), ...(action.urls ?? [])];
+    if (isNonEmpty(scope.paths)) {
+      for (const target of targets) {
+        if (!targetInPrefixes(target, scope.paths)) return { gate: "conformance", passed: false, reason: `target "${target}" is outside the skill's authorized paths [${scope.paths.join(", ")}]` };
+      }
+    }
+    return { gate: "conformance", passed: true, reason: `action "${action.tool}"${targets.length ? ` on ${targets.join(", ")}` : ""} is within the active skill's declared action_scope` };
+  }
+
+  // ---- the read-only skill's declared action_scope ----
+  const SCOPE = { name: "research-assistant", tools: ["kcp_recall", "kcp_load", "Read", "synthesis_summarize", "kcp_remember"], paths: ["docs/", "kcp/knowledge/", "kcp/memory/"] };
+
+  const tryWrite = el("tryWrite"), planEl = el("plan"), runBtn = el("run"), addSrc = el("addSrc");
+  const srcChips = el("srcChips");
+  const short = (p) => p.split("/").pop();
+  const chips = () => [...srcChips.querySelectorAll(".chip")];
+  const selected = () => chips().filter((c) => c.getAttribute("aria-pressed") === "true").map((c) => c.dataset.v);
+
+  function bindChip(c) {
+    const t = () => { c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true"); syncCount(); };
+    c.addEventListener("click", t);
+    c.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); t(); } });
+  }
+  function syncCount() { el("srcCount").textContent = selected().length + " selected"; }
+  chips().forEach(bindChip);
+
+  function addSource() {
+    const raw = addSrc.value.trim();
+    if (!raw) return;
+    const slug = raw.toLowerCase().replace(/[^a-z0-9.-]+/g, "-").replace(/^-+|-+$/g, "") || "note";
+    const name = slug.endsWith(".md") ? slug : slug + ".md";
+    const c = document.createElement("span");
+    c.className = "chip"; c.setAttribute("role", "button"); c.setAttribute("tabindex", "0");
+    c.setAttribute("aria-pressed", "true"); c.dataset.v = "kcp/knowledge/" + name; c.textContent = name;
+    srcChips.appendChild(c); bindChip(c); addSrc.value = ""; syncCount();
+  }
+  el("addBtn").addEventListener("click", addSource);
+  addSrc.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addSource(); } });
+
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => {
+    tryWrite.checked = b.dataset.preset === "write";
+    el("narrate").innerHTML = b.dataset.preset === "write"
+      ? `Preset: <b>tries to write</b>. The read plan is unchanged, but one <code>Write</code> action is bolted on — a tool the read-only scope never declared. Press <b>▶ Run research</b> and watch that single step get held while everything else sails through.`
+      : `Preset: <b>pure research</b>. Every planned action is inside the read-only scope. Press <b>▶ Run research</b> — nothing to stop, full speed, and a full audit trail anyway.`;
+  }));
+
+  // ---- build the scripted read-only plan ----
+  function buildPlan() {
+    const steps = [{ label: "recall prior findings", tool: "kcp_recall", paths: [] }];
+    for (const src of selected()) steps.push({ label: "load " + short(src), tool: "kcp_load", paths: [src] });
+    steps.push({ label: "summarise & ground", tool: "synthesis_summarize", paths: [] });
+    steps.push({ label: "remember research note", tool: "kcp_remember", paths: ["kcp/memory/research-notes.md"] });
+    if (tryWrite.checked) steps.push({ label: "write revised control doc", tool: "Write", paths: ["docs/compliance/iso-27001.md"] });
+    return steps;
+  }
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const reduce = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function renderRow(step, v) {
+    const row = document.createElement("div");
+    row.className = "field"; row.style.marginBottom = "8px";
+    row.innerHTML = `<label style="margin-bottom:0">${esc(step.label)} `
+      + `<span class="val" style="color:var(--${v.passed ? "pass" : "block"})">${esc(step.tool)} · ${v.passed ? "✓ allowed" : "✗ held"}</span></label>`;
+    planEl.appendChild(row);
+  }
+
+  runBtn.addEventListener("click", async () => {
+    runBtn.disabled = true;
+    planEl.innerHTML = "";
+    const plan = buildPlan();
+    const steps = [];
+    let governed = 0, blocked = 0, heldReason = null;
+    const slow = !reduce();
+
+    el("narrate").innerHTML = `Running the read-only plan — ${plan.length} governed actions. Each is classified, checked against the skill's <code>action_scope</code>, and logged before it runs…`;
+
+    for (const step of plan) {
+      const v = checkConformance({ tool: step.tool, paths: step.paths }, SCOPE);
+      governed++; if (!v.passed) { blocked++; if (!heldReason) heldReason = v.reason; }
+      steps.push({ k: step.label, v: v.passed ? "✓" : "✗", tool: step.tool, passed: v.passed, reason: v.reason });
+      renderRow(step, v);
+      el("audit").textContent = `governed:${governed} blocked:${blocked} tickets:${blocked}`;
+      if (slow) await sleep(380);
+    }
+
+    const tickets = blocked;
+    const clear = blocked === 0;
+    el("narrate").innerHTML = clear
+      ? `Done. <b>${governed} governed actions, 0 blocks, 0 tickets.</b> A bounded read-only skill ran end to end with nothing in its way — and every step is checked, stamped, and signed in the audit chain. <b>This is why it's safe to let it run unattended.</b>`
+      : `Done. <b>${blocked} action held</b> — <code>Write</code> is not in the read-only scope, so the adjudicator stopped it and opened a <code>pending_review</code> ticket. The ${governed - blocked} in-scope steps still ran clean. One guardrail, right where it belongs; the research still shipped.`;
+
+    await KCP.printReceipt(el("well"), {
+      title: "RESEARCH RUN", meta: "gate: conformance · read-only skill",
+      lines: steps.map((s) => ({ k: s.k, v: s.v })),
+      stampClass: clear ? "pass" : "block",
+      stampText: clear ? "✓ CLEAR RUN" : `✗ ${blocked} HELD`,
+      reason: clear
+        ? `read-only scope — ${governed} governed actions, 0 blocks, 0 tickets`
+        : heldReason,
+      footer: clear
+        ? [{ k: "summary", v: "grounded, cited ✓" }, { k: "audit chain", v: `governed:${governed} blocked:0 tickets:0` }]
+        : [{ k: "summary", v: "grounded, cited ✓" }, { k: "held action", v: "Write · out of scope" }, { k: "audit chain", v: `governed:${governed} blocked:${blocked} tickets:${tickets}` }],
+      payload: { action: "research_run", skill: SCOPE.name, steps, audit: { governed, blocked, tickets }, verdict: { gate: "conformance", clear, blocked } },
+    });
+    runBtn.disabled = false;
+  });
+
+  syncCount();
+})();
+</script>
+</body>
+</html>

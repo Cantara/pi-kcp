@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — One Verdict, Two Depths</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🪞</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 09 / 11 · one adjudicator</span></header>
+  <h1>One Verdict, Two Depths</h1>
+  <p class="sub">KCP governs at the <b>MCP proxy boundary</b> — intercepting the agent's tool calls — and again <b>inside the agent's own runtime loop</b>, where the pi-kcp runtime checks its own actions. Two enforcement points, at very different depths. But there is only <b>one adjudicator</b>: both call the same <code>checkConformance</code>. The same action yields the same verdict at both depths, <b>by construction</b>. Set a scope, aim an action, and watch a single function get invoked twice — then watch the two verdicts get compared byte-for-byte. <b>The decision is the real <code>checkConformance</code> tool/path logic from <code>kcp-harness</code>, and the receipt is signed &amp; verified with genuine <code>crypto.subtle</code> in your browser.</b></p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Set an <code>action_scope</code> and an action, then press <b>▶ Check at both depths</b>. The <em>same</em> adjudicator runs once at the proxy boundary and once in the runtime loop — the printer proves the two verdicts are identical.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="in">✓ in-scope (both ALLOW)</button>
+          <button class="preset" data-preset="out">out-of-scope (both HELD)</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> skill · action_scope</h2>
+          <div class="field"><label>allowed_paths</label>
+            <div class="chips" id="pathChips">
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-p="knowledge/">knowledge/</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-p="docs/">docs/</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="false" data-p="tmp/">tmp/</span>
+            </div>
+          </div>
+          <div class="field"><label>allowed_tools</label>
+            <div class="chips" id="toolChips">
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-t="read_file">read_file</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-t="list_directory">list_directory</span>
+              <span class="chip" role="button" tabindex="0" aria-pressed="true" data-t="search_files">search_files</span>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the agent wants to act</h2>
+          <div class="row2">
+            <div class="field"><label>tool</label><select id="actTool"><option>read_file</option><option>list_directory</option><option>search_files</option><option>write_file</option></select></div>
+            <div class="field"><label>target path</label><select id="actTarget"><option>knowledge/api.md</option><option>docs/plan.md</option><option>tmp/scratch.txt</option><option>secrets/master.key</option></select></div>
+          </div>
+          <button class="run" id="run">▶ Check at both depths</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no receipt yet —<br>the printer is warm</div></div>
+        <div class="ledger"><span>checks · verdicts converged</span><span class="amt" id="ledger">0</span></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../shopping/">← The Shopping Agent</a>
+      <a href="../../">All stations</a>
+      <a href="../research-assistant/">The Research Assistant →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 09 of 11. One adjudicator, invoked at two depths: the <b>MCP proxy boundary</b> builds the <code>ObservedAction</code> from the intercepted tool call (via <code>classifier.extractTargets</code>) and adjudicates it; the <b>pi-kcp runtime loop</b> supplies its own action directly and adjudicates it. Both call the <em>same</em> <code>checkConformance</code> (verbatim: fail-closed no-scope → tools → paths, with <code>normalizePath</code>/<code>matchesPrefix</code> traversal-safe prefix membership). The two verdicts are then deep-compared — identical by construction. Receipt signed &amp; verified with genuine <code>crypto.subtle</code>.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el } = KCP; KCP.initTheme();
+
+  // ---- REAL conformance tool/path logic (verbatim from kcp-harness/src/conformance.ts + classifier.ts) ----
+  const isNonEmpty = (a) => Array.isArray(a) && a.length > 0;
+
+  // str — verbatim from classifier.ts.
+  const str = (v) => (typeof v === "string" ? v : undefined);
+
+  // normalizePath — verbatim from classifier.ts: resolve ../, strip leading ./, collapse //.
+  function normalizePath(p) {
+    let n = p.replace(/\/+/g, "/");
+    if (n.startsWith("./")) n = n.slice(2);
+    const parts = n.split("/");
+    const resolved = [];
+    for (const part of parts) {
+      if (part === "..") {
+        if (resolved.length > 0 && resolved[resolved.length - 1] !== "..") {
+          resolved.pop();
+        }
+      } else if (part !== ".") {
+        resolved.push(part);
+      }
+    }
+    n = resolved.join("/");
+    return n;
+  }
+
+  // matchesPrefix — verbatim from classifier.ts: directory-boundary-aware prefix match.
+  function matchesPrefix(path, prefix) {
+    const a = path.replace(/\/+$/, "");
+    const b = prefix.replace(/\/+$/, "");
+    if (a === b) return true;
+    return a.startsWith(b + "/");
+  }
+
+  // PATH_EXTRACTORS / extractTargets — verbatim from classifier.ts (the shapes the proxy
+  // derives an ObservedAction from at the MCP boundary). MCP filesystem tools use `path`.
+  const PATH_EXTRACTORS = {
+    Read: (a) => str(a["file_path"]),
+    Edit: (a) => str(a["file_path"]),
+    Write: (a) => str(a["file_path"]),
+    read_file: (a) => str(a["path"]),
+    write_file: (a) => str(a["path"]),
+    list_directory: (a) => str(a["path"]),
+    search_files: (a) => str(a["path"]),
+    get_file_info: (a) => str(a["path"]),
+  };
+  function extractTargets(toolName, args) {
+    const paths = [];
+    const urls = [];
+    const pathFn = PATH_EXTRACTORS[toolName];
+    if (pathFn) {
+      const p = pathFn(args);
+      if (p) paths.push(p);
+    }
+    return { paths, urls };
+  }
+
+  // targetInPrefixes / isUrl — verbatim from conformance.ts.
+  const isUrl = (target) => /^[a-z][a-z0-9+.-]*:\/\//i.test(target);
+  function targetInPrefixes(target, prefixes) {
+    const norm = normalizePath(target);
+    return prefixes.some(
+      (p) => matchesPrefix(norm, normalizePath(p)) || (isUrl(target) && target.startsWith(p)),
+    );
+  }
+
+  // hasScope — a scope is parseable when it declares at least one dimension (spend branch omitted for this station).
+  function hasScope(scope) {
+    if (!scope || typeof scope !== "object") return false;
+    return (
+      isNonEmpty(scope.tools) ||
+      isNonEmpty(scope.paths) ||
+      isNonEmpty(scope.capabilities)
+    );
+  }
+
+  // checkConformance — THE ONE ADJUDICATOR. TOOLS + PATHS branch, verbatim from conformance.ts
+  // (fail-closed no-scope → tool → path → pass). Exported from the package root precisely so
+  // BOTH the proxy and the pi-kcp runtime share this single deterministic decision.
+  function checkConformance(action, scope) {
+    // Fail-closed: an absent or unparseable scope authorizes nothing.
+    if (!hasScope(scope)) {
+      return { gate: "conformance", passed: false, facet: "scope", reason: `the active skill declares no action_scope — fail-closed; action "${action.tool}" is held for review` };
+    }
+
+    // Tool dimension — allowlist when declared.
+    if (isNonEmpty(scope.tools) && !scope.tools.includes(action.tool)) {
+      return { gate: "conformance", passed: false, facet: "tool", reason: `tool "${action.tool}" is outside the skill's authorized tools [${scope.tools.join(", ")}]` };
+    }
+
+    // Path/URL dimension — every target the action reaches must be authorized.
+    const targets = [...(action.paths ?? []), ...(action.urls ?? [])];
+    if (isNonEmpty(scope.paths)) {
+      for (const target of targets) {
+        if (!targetInPrefixes(target, scope.paths)) {
+          return { gate: "conformance", passed: false, facet: "path", reason: `target "${target}" is outside the skill's authorized paths [${scope.paths.join(", ")}]` };
+        }
+      }
+    }
+
+    return { gate: "conformance", passed: true, facet: null, reason: `action "${action.tool}"${targets.length ? ` on ${targets.join(", ")}` : ""} is within the active skill's declared action_scope` };
+  }
+
+  // Deep, order-preserving structural equality — canonical JSON of each verdict, compared byte-for-byte.
+  const canon = (o) => JSON.stringify(o);
+  const identical = (a, b) => canon(a) === canon(b);
+
+  const actTool = el("actTool"), actTarget = el("actTarget");
+  const pathChips = [...document.querySelectorAll("#pathChips .chip")];
+  const toolChips = [...document.querySelectorAll("#toolChips .chip")];
+  let ledger = 0;
+  const pressed = (chips, attr) => chips.filter((c) => c.getAttribute("aria-pressed") === "true").map((c) => c.dataset[attr]);
+  const paths = () => pressed(pathChips, "p");
+  const tools = () => pressed(toolChips, "t");
+
+  [pathChips, toolChips].forEach((chips) => chips.forEach((c) => {
+    const t = () => c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true");
+    c.addEventListener("click", t);
+    c.addEventListener("keydown", (e) => { if (e.key === " " || e.key === "Enter") { e.preventDefault(); t(); } });
+  }));
+
+  const presets = {
+    in:  { paths: ["knowledge/", "docs/"], tools: ["read_file", "list_directory", "search_files"], tool: "read_file", target: "knowledge/api.md" },
+    out: { paths: ["knowledge/", "docs/"], tools: ["read_file", "list_directory", "search_files"], tool: "read_file", target: "secrets/master.key" },
+  };
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => {
+    const p = presets[b.dataset.preset];
+    pathChips.forEach((c) => c.setAttribute("aria-pressed", p.paths.includes(c.dataset.p) ? "true" : "false"));
+    toolChips.forEach((c) => c.setAttribute("aria-pressed", p.tools.includes(c.dataset.t) ? "true" : "false"));
+    actTool.value = p.tool; actTarget.value = p.target;
+  }));
+
+  el("run").addEventListener("click", async () => {
+    // ONE scope, declared by the loaded skill — pinned identically for both depths.
+    const scope = { name: "knowledge-runner", tools: tools(), paths: paths() };
+
+    // DEPTH 1 — the MCP proxy boundary. The proxy intercepts the raw tool call and derives
+    // the ObservedAction from its arguments via classifier.extractTargets.
+    const toolArgs = { path: actTarget.value };
+    const proxyAction = { tool: actTool.value, ...extractTargets(actTool.value, toolArgs) };
+    const proxyVerdict = checkConformance(proxyAction, scope);
+
+    // DEPTH 2 — inside the pi-kcp runtime loop. The runtime's ConformanceChecker supplies its
+    // own action directly and adjudicates it — the SAME function, a very different depth.
+    const runtimeAction = { tool: actTool.value, paths: [actTarget.value] };
+    const runtimeVerdict = checkConformance(runtimeAction, scope);
+
+    // Compare the two verdicts byte-for-byte. Identical by construction — that is the whole point.
+    const same = identical(proxyVerdict, runtimeVerdict);
+    const word = proxyVerdict.passed ? "allow" : "held";
+    const cell = (v) => (v.passed ? "✓ allow" : "✗ held");
+
+    el("narrate").innerHTML = same
+      ? `One adjudicator, invoked twice. <b>Proxy depth</b> and <b>runtime depth</b> returned <b>byte-identical</b> verdicts — both <code>${word}</code>. Deciding reason: <em>${KCP.esc(proxyVerdict.reason)}</em>`
+      : `<b>Invariant violated</b> — the two depths <b>diverged</b>. This should be impossible: they share one <code>checkConformance</code>.`;
+
+    if (same) { ledger += 1; el("ledger").textContent = ledger; }
+
+    await KCP.printReceipt(el("well"), {
+      title: "EQUIVALENCE VERDICT", meta: "one adjudicator · two depths",
+      lines: [
+        { k: "action", v: proxyAction.tool + " → " + actTarget.value },
+        { k: "proxy depth", v: cell(proxyVerdict) },
+        { k: "runtime depth", v: cell(runtimeVerdict) },
+      ],
+      stampClass: same ? "pass" : "block",
+      stampText: same ? "✓ IDENTICAL" : "✗ DIVERGED",
+      reason: same
+        ? `one adjudicator, two depths — verdicts byte-identical (both: ${word})`
+        : `verdicts DIVERGED across depths — proxy said ${cell(proxyVerdict)}, runtime said ${cell(runtimeVerdict)}; the shared-adjudicator invariant is broken`,
+      footer: same
+        ? [{ k: "shared fn", v: "checkConformance" }, { k: "compare", v: "byte-identical ✓" }, { k: "event", v: "verdicts_converged" }]
+        : [{ k: "shared fn", v: "checkConformance" }, { k: "compare", v: "DIVERGED ✗" }, { k: "ticket", v: "invariant_violation" }],
+      payload: { proxy: proxyVerdict, runtime: runtimeVerdict, identical: same },
+    });
+  });
+})();
+</script>
+</body>
+</html>

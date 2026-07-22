@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KCP Playground — The Forgotten Memory</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧠</text></svg>">
+<link rel="stylesheet" href="../../assets/shell.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><span class="brand"><a href="../../"><b>KCP</b> Playground</a> · 06 / 11 · what it remembers</span></header>
+  <h1>The Forgotten Memory</h1>
+  <p class="sub">A memory is a plan you can re-verify against a moved world — but it is <b>governed too</b>. Before a stored episode can steer anything, KCP checks the recall gate: the entry declares a <b>retention window</b> and a <b>provenance</b>, and carries a <b>right-to-forget</b>. Recall is allowed only if the entry is within retention <b>and</b> not forgotten — so a stale or erased memory can't quietly resurface. <b>The verdict is computed fail-closed and the record is signed &amp; verified with genuine <code>crypto.subtle</code> in your browser.</b></p>
+
+  <div class="stage">
+    <p class="narrate" id="narrate">Describe a governed memory entry, then press <b>▶ Attempt recall</b>. Age it past its retention window, or exercise the right to forget — see what the printer says.</p>
+    <div class="grid">
+      <div>
+        <div class="presets">
+          <button class="preset" data-preset="fresh">✓ fresh, allowed</button>
+          <button class="preset" data-preset="expired">past retention</button>
+          <button class="preset" data-preset="forgotten">forgotten</button>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> memory entry · governed unit</h2>
+          <div class="field"><label>provenance / source</label><input type="text" id="source" value="user-profile · consent 2026-05"></div>
+          <div class="field"><label>retention window <span class="val"><span id="retV">90</span> days</span></label><input type="range" id="retention" min="0" max="365" step="1" value="90"></div>
+          <div class="field"><label>entry age (vs today) <span class="val"><span id="ageV">12</span> days</span></label><input type="range" id="age" min="0" max="365" step="1" value="12"></div>
+          <div class="field"><label>right to forget (GDPR erasure) <span class="val"><input type="checkbox" id="forgotten"></span></label></div>
+        </div>
+        <div class="card">
+          <h2><span class="dot"></span> the agent wants to recall</h2>
+          <div class="field"><label>recall query</label><input type="text" id="query" value="what were the user's stated preferences"></div>
+          <button class="run" id="run">▶ Attempt recall</button>
+        </div>
+      </div>
+      <div class="printer">
+        <div class="slot"></div>
+        <div class="paperwell" id="well"><div class="empty">no receipt yet —<br>the printer is warm</div></div>
+        <div class="ledger"><span>session recalls · granted</span><span class="amt" id="ledger">0</span></div>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <a href="../confidence/">← The Confident Fool</a>
+      <a href="../../">All stations</a>
+      <a href="../runaway/">The Runaway, Contained →</a>
+    </nav>
+  </div>
+
+  <p class="foot">Station 06 of 11. The recall gate is <b>fail-closed</b>: an entry must be within its retention window <em>and</em> not erased before it can steer a plan. This mirrors <code>kcp-agent/src/memory.ts</code>, where <code>recall()</code> filters every episode through <code>verifyEntry</code> (a hash-pinned tamper check) before it counts. Retention and right-to-forget are the governance envelope layered over provenance (<code>manifestSource</code>) and record time (<code>recordedAt</code>). Verdict signed &amp; verified with genuine <code>crypto.subtle</code>.</p>
+</div>
+
+<script src="../../assets/shell.js"></script>
+<script>
+(() => {
+  "use strict";
+  const { el } = KCP; KCP.initTheme();
+
+  // ---- recall gate: governed-memory recall logic (fail-closed, mirrors memory.ts recall() gating) ----
+  // A memory entry is a governed unit: it declares a retention window + provenance and carries a
+  // right-to-forget. Recall is permitted only if the entry is within retention AND not forgotten.
+  function checkRecall(entry) {
+    const { source, retentionDays, ageDays, forgotten } = entry;
+    // right-to-forget is absolute — an erased episode is dropped before any freshness check.
+    if (forgotten) return { passed: false, facet: "forgotten", reason: `entry "${source}" was erased on the data subject's request (right to forget) — recall refused, fail-closed` };
+    if (ageDays > retentionDays) return { passed: false, facet: "expired", reason: `entry age ${ageDays}d is beyond its ${retentionDays}d retention window — stale episode, recall refused` };
+    return { passed: true, facet: null, reason: `within retention (${ageDays}d ≤ ${retentionDays}d) and not forgotten — recall allowed` };
+  }
+
+  const retention = el("retention"), age = el("age"), forgotten = el("forgotten"), source = el("source"), query = el("query");
+  let ledger = 0;
+  function sync() {
+    el("retV").textContent = retention.value; el("ageV").textContent = age.value;
+  }
+  [retention, age, forgotten, source, query].forEach((x) => x.addEventListener("input", sync));
+
+  const presets = {
+    fresh: { src: "user-profile · consent 2026-05", ret: 90, age: 12, forg: false, q: "what were the user's stated preferences" },
+    expired: { src: "support-ticket · logged 2025-11", ret: 30, age: 214, forg: false, q: "what was the last shipping address" },
+    forgotten: { src: "chat-history · former customer", ret: 90, age: 12, forg: true, q: "who is this data subject" },
+  };
+  document.querySelectorAll(".preset").forEach((b) => b.addEventListener("click", () => {
+    const p = presets[b.dataset.preset];
+    source.value = p.src; retention.value = p.ret; age.value = p.age; forgotten.checked = p.forg; query.value = p.q;
+    sync();
+  }));
+
+  el("run").addEventListener("click", async () => {
+    const entry = { source: source.value, retentionDays: Number(retention.value), ageDays: Number(age.value), forgotten: forgotten.checked };
+    const v = checkRecall(entry);
+    el("narrate").innerHTML = v.passed
+      ? `Recall <b>allowed</b> — the episode is within retention and not forgotten, so it re-enters planning to be re-verified against the live world.`
+      : `Recall <b>refused</b> — deciding facet: <code>${v.facet}</code>. The episode never re-enters planning; a ${v.facet === "forgotten" ? "<b>right-to-forget</b> erasure" : "<b>past-retention</b> boundary"} kept it from quietly resurfacing.`;
+    if (v.passed) ledger += 1;
+    el("ledger").textContent = ledger;
+    await KCP.printReceipt(el("well"), {
+      title: "MEMORY VERDICT", meta: "gate: recall",
+      lines: [
+        { k: "source", v: entry.source },
+        { k: "age / retention", v: entry.ageDays + "d / " + entry.retentionDays + "d" },
+        { k: "forgotten?", v: entry.forgotten ? "yes · erased" : "no" },
+      ],
+      stampClass: v.passed ? "pass" : "block",
+      stampText: v.passed ? "✓ RECALLED" : "✗ REFUSED",
+      reason: v.reason,
+      footer: v.passed
+        ? [{ k: "re-verify", v: "against live manifest" }, { k: "event", v: "episode_recalled" }]
+        : [{ k: "recall()", v: "DROPPED" }, { k: "steers plan", v: "no" }, { k: "reason", v: v.facet === "forgotten" ? "erased" : "beyond retention" }],
+      payload: { entry, verdict: { gate: "recall", passed: v.passed, reason: v.reason } },
+    });
+  });
+  sync();
+})();
+</script>
+</body>
+</html>
