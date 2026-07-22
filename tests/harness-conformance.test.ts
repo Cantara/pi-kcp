@@ -60,13 +60,23 @@ describe("HarnessConformanceChecker (#28 enforcement)", () => {
     expect(outByTool.reason).toContain('tool "bash" is outside the skill\'s authorized tools');
   });
 
-  it("fail-closes when there is no active skill", async () => {
+  it("passes (defers to the other gates) when there is no active skill by default", async () => {
     const resolver = stubResolver({ tools: ["read"] });
     const checker = new HarnessConformanceChecker({ resolveScope: resolver });
     const result = await checker.check(action("read", { path: "/repo/x.ts" }), ctx);
-    expect(result.conformant).toBe(false);
+    expect(result.conformant).toBe(true);
     expect(result.reason).toContain("no active skill");
     // No skill → no scope resolution attempted.
+    expect(resolver.calls).toBe(0);
+  });
+
+  it("fail-closes on a no-skill action when requireActiveSkill (strict mode) is on", async () => {
+    const resolver = stubResolver({ tools: ["read"] });
+    const checker = new HarnessConformanceChecker({ resolveScope: resolver, requireActiveSkill: true });
+    const result = await checker.check(action("read", { path: "/repo/x.ts" }), ctx);
+    expect(result.conformant).toBe(false);
+    expect(result.reason).toContain("requireActiveSkill");
+    // Still short-circuits before scope resolution.
     expect(resolver.calls).toBe(0);
   });
 

@@ -8,7 +8,8 @@ the governance loop where the agent actually acts — inside the Pi turn, at the
 `tool_call` boundary — not only in front of an MCP tool server.
 
 Shipped on top of `0.2.0` as `#30` (issues `#26`–`#29`). No breaking changes to the
-existing `/kcp` command surface; the new behavior is additive and on by default.
+existing `/kcp` command surface; the new behavior is additive and on by default, but
+scoped to skills — it never blocks a general tool call out of the box.
 
 ### What pi-kcp now is
 
@@ -43,11 +44,20 @@ ties recall, plan, messages, and conformance decisions together.
   `checkConformance` — the identical verdict the harness proxy produces, with the
   harness's own written reason (e.g. `target "/etc/passwd" is outside the skill's
   authorized paths [...]`). A non-conformant call is **blocked before it runs**.
-- **Fail-closed posture.** Consistent with the harness: no active skill, an
-  unresolvable scope, or a scope that declares nothing → nothing is authorized and
-  the action is held for review. Enforcement can be disabled by injecting the
-  exported `passThroughChecker`, or replaced with a custom checker via
-  `register(pi, { conformanceChecker })`.
+- **Scoped by default, fail-closed under a skill.** Conformance bounds a *skill's*
+  actions, so the default checker engages only when a skill is active. With **no
+  skill active** an action is unscoped/general and **passes conformance** — it is
+  still governed by the other gates + approval, which conformance does not replace.
+  Once a **skill is active**, enforcement is fail-closed and consistent with the
+  harness: an unresolvable scope or a scope that declares nothing → nothing is
+  authorized and the action is held for review.
+- **Strict opt-in (`requireActiveSkill`).** High-assurance autonomous agents that
+  should only ever act within a declared skill can flip a single option to fail-close
+  no-skill actions too. Off by default; settable per-embedder via
+  `register(pi, { requireActiveSkill: true })` or per-project via
+  `requireActiveSkill: true` in `.pi/kcp.json`. Enforcement can also be disabled
+  entirely by injecting the exported `passThroughChecker`, or replaced with a custom
+  checker via `register(pi, { conformanceChecker })`.
 - **One correlation chain** (`src/correlation.ts`). Every governed turn is stamped
   with a W3C `traceparent` (version `00`, sampled). The same id is threaded onto
   kcp-memory recall (`?traceparent=`), kcp-agent plan invocations
@@ -71,9 +81,9 @@ end-to-end `register()` path that fail-closes an out-of-scope read against a rea
 |---|---|---|
 | Where it sits | In front of the agent's MCP tools | Inside the Pi turn, at `tool_call` |
 | What it governs | Knowledge calls made *through the proxy* | The agent's *native* read / bash / fetch |
-| Decision function | `checkConformance` (13-gate planner behind it) | The **same** `checkConformance` |
+| Decision function | `checkConformance` (planner's 14 gates behind it: the 13-gate knowledge cascade **plus** the `skill_eligibility` gate) | The **same** `checkConformance` |
 | Compliance output | Audit log, decision traces, exports | Correlated block reasons, same `traceparent` |
-| Trust posture | Fail-closed | Fail-closed |
+| Trust posture | Fail-closed | Fail-closed once a skill is active; strict `requireActiveSkill` fail-closes with no skill |
 
 The two are complementary, not redundant: the proxy governs the MCP surface, the
 runtime governs everything the agent does without the proxy, and one correlation
@@ -111,9 +121,15 @@ scheme spans both.
 
 ### Upgrade notes
 
-- Enforcement is **on by default**. In a session where no skill is active, native
-  tool calls are held (fail-closed). Load or force a skill whose `action_scope`
-  authorizes the work, or inject `passThroughChecker` to opt out.
+- Enforcement is **on by default, but scoped to skills**. It does **not** block
+  general tool calls out of the box: in a session where no skill is active, native
+  tool calls pass conformance and defer to the other gates + approval. Once a skill
+  is active, calls outside its `action_scope` are held (fail-closed) — load or force
+  a skill whose scope authorizes the work, or inject `passThroughChecker` to opt out.
+- For high-assurance autonomous agents that should only ever act within a declared
+  skill, set `requireActiveSkill: true` (via `register(pi, { requireActiveSkill:
+  true })` or `.pi/kcp.json`) to restore fail-closed-when-no-skill behavior.
 - Ensure `.pi/settings.json` has `enableSkillCommands: true` so `/skill:<name>` and
   skill command resolution work.
-- No configuration migration is required; `.pi/kcp.json` fields are unchanged.
+- No configuration migration is required. `.pi/kcp.json` gains one optional field,
+  `requireActiveSkill` (boolean, default `false`); existing files remain valid.

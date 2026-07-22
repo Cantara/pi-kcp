@@ -127,12 +127,15 @@ For each turn, the extension runs this loop:
    `/skill:<name>` line here forces that skill for the turn.
 3. **Skill gating.** When the agent loads a skill by reading its `SKILL.md`, that read
    is recognized and the skill becomes *active* for the turn.
-4. **Conformance block.** Every native `tool_call` is checked before it runs. The call
-   is mapped to a harness action (its tool name, plus `path` / `file_path` / `url`
-   targets), the active skill's `action_scope` is resolved from `knowledge.yaml`, and
-   kcp-harness's deterministic `checkConformance` adjudicates. Out of scope → the call
-   is **blocked** with the harness's written reason. **No active skill → the call is
-   held (fail-closed).**
+4. **Conformance block.** Every native `tool_call` is checked before it runs. When a
+   skill is active, the call is mapped to a harness action (its tool name, plus `path`
+   / `file_path` / `url` targets), the active skill's `action_scope` is resolved from
+   `knowledge.yaml`, and kcp-harness's deterministic `checkConformance` adjudicates.
+   Out of scope → the call is **blocked** with the harness's written reason. **No
+   active skill → conformance is not applicable and the call passes through** to the
+   other gates + approval (conformance bounds a *skill's* actions; it does not govern
+   general, unscoped ones). Strict mode (`requireActiveSkill`) instead fail-closes a
+   no-skill call — see Configuration.
 5. **Approval / evidence.** The correlation id is stamped on recall lookups, plan
    invocations, and every published message, so the turn's recall → plan → skill →
    decision chain shares one id.
@@ -143,9 +146,12 @@ A blocked call looks like this to the agent:
 target "/etc/passwd" is outside the skill's authorized paths [src/deploy, scripts/deploy.sh]
 ```
 
-> **Fail-closed by default.** With enforcement on and no skill active, native tool
-> calls are held. Load or force a skill whose `action_scope` covers the work — or opt
-> out of enforcement (see Configuration).
+> **Scoped by default, not blanket-blocking.** Enforcement is on by default but bounds
+> a *skill's* actions — it does **not** block general tool calls when no skill is
+> active; those pass conformance and defer to the other gates + approval. Once a skill
+> is active, calls outside its `action_scope` are held (fail-closed). For agents that
+> should only ever act within a declared skill, set `requireActiveSkill: true` to
+> fail-close no-skill calls too (see Configuration).
 
 ## Configuration
 
@@ -162,6 +168,7 @@ automatic behavior and is reported by `/kcp health`.
   "maxResults": 3,
   "timeoutMs": 400,
   "manifest": "knowledge.yaml",
+  "requireActiveSkill": false,
   "agentCli": "/path/to/kcp-agent/dist/cli.js"
 }
 ```
@@ -170,6 +177,10 @@ automatic behavior and is reported by `/kcp health`.
 - `maxResults` — recall result cap (1–10, default 3).
 - `timeoutMs` — recall network timeout (50–5000 ms, default 400).
 - `manifest` — manifest filename (default `knowledge.yaml`).
+- `requireActiveSkill` — strict conformance mode (default `false`). When `true`, tool
+  calls taken with **no active skill** are fail-closed instead of passing through to
+  the other gates. Use it for high-assurance autonomous agents that should only ever
+  act within a declared skill's `action_scope`.
 - `agentCli` — explicit kcp-agent CLI path or command. Discovery also checks
   `KCP_AGENT_CLI`, known Homebrew/npm install locations, and `kcp-agent` on `PATH`.
 
@@ -185,11 +196,16 @@ Enable skill commands so `/skill:<name>` and skill-name resolution work:
 
 ### Injecting or disabling the conformance checker
 
-The default checker is the fail-closed `HarnessConformanceChecker`. When you embed the
-extension programmatically you can swap it:
+The default checker is the `HarnessConformanceChecker` — scoped to skills, fail-closed
+once a skill is active. When you embed the extension programmatically you can tune or
+swap it:
 
 ```ts
 import register, { passThroughChecker } from "@cantara/pi-kcp";
+
+// Strict mode: fail-close tool calls taken with no active skill too.
+// (Equivalent to "requireActiveSkill": true in .pi/kcp.json; the option here pins it.)
+register(pi, { requireActiveSkill: true });
 
 // Disable enforcement (allow-all):
 register(pi, { conformanceChecker: passThroughChecker });
@@ -197,6 +213,11 @@ register(pi, { conformanceChecker: passThroughChecker });
 // Or wire a custom ConformanceChecker implementation:
 register(pi, { conformanceChecker: myChecker });
 ```
+
+`requireActiveSkill` passed to `register` takes precedence and is fixed for the
+session; when omitted, the built-in checker reads `requireActiveSkill` from
+`.pi/kcp.json` at each turn. It has no effect when a custom `conformanceChecker` is
+injected.
 
 ### Optional MCP providers
 
@@ -239,7 +260,7 @@ kcp-harness dashboard --port 3847
 
 | Symptom | Cause / fix |
 |---|---|
-| Every tool call is blocked / "no active skill … held" | Fail-closed default with no skill active. Load a skill (read its `SKILL.md`) or force one with `/skill:<name>`, or inject `passThroughChecker`. |
+| Every tool call is blocked / "no active skill … held (requireActiveSkill)" | Strict mode is on (`requireActiveSkill: true`). This only happens in strict mode — the default lets no-skill calls through. Load or force a skill whose `action_scope` covers the work, set `requireActiveSkill: false`, or inject `passThroughChecker`. |
 | "outside the skill's authorized paths/tools/capabilities" | The action left the active skill's `action_scope`. Widen the scope in `knowledge.yaml` (and `/kcp validate`) or take a different action. |
 | `/kcp plan` returns "invalid --json output" or a schema error | kcp-agent version mismatch. Update `pi-kcp` or pin a compatible `kcp-agent`; this extension understands plan `schemaVersion` 1. |
 | `/kcp health` shows `kcp-agent: unavailable` | Set `agentCli` in `.pi/kcp.json`, set `KCP_AGENT_CLI`, or install the `kcp-agent` executable on `PATH`. |
