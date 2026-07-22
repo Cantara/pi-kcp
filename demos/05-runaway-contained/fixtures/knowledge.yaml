@@ -1,0 +1,51 @@
+# Demo 5 fixture — the KCP manifest the harness governs against.
+#
+# - deploy-skill : the ONE sanctioned procedure the autonomous agent loads. Its
+#   action_scope is the allowlist every later action is held to (tools + ops/).
+# - the ops/* units : documents whose paths let the governor's auto-plan APPROVE
+#   the in-scope file actions (the governor requires a manifest unit whose path
+#   overlaps the target before a governed file call may proceed).
+kcp_version: "0.26"
+project: acme-deploy
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME SRE"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  # The sanctioned autonomous procedure.
+  - id: deploy-skill
+    path: playbooks/deploy-skill.md
+    intent: "Deploy the ACME service to production using the ops runbook."
+    audience: [agent]
+    triggers: [deploy, release, production, playbook, skill]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [read_file, write_file]
+      paths: ["ops/"]
+
+  # In-scope ops documents (govern auto-plan needs a unit covering each target).
+  - id: svc-config
+    path: ops/service.conf
+    intent: "access ops/service.conf"
+    audience: [agent]
+    triggers: [ops, service, config, access]
+  - id: release-log
+    path: ops/release.log
+    intent: "access ops/release.log"
+    audience: [agent]
+    triggers: [ops, release, log, access]
+  - id: complete-flag
+    path: ops/complete.flag
+    intent: "access ops/complete.flag"
+    audience: [agent]
+    triggers: [ops, complete, flag, access]

@@ -1,0 +1,40 @@
+# Demo 1 fixture — "The Superseded Policy"
+#
+# Two versions of the same refund policy live in the manifest. The 2024 unit
+# declares `temporal.superseded_by` pointing at the March-2026 unit. The KCP
+# planner's supersession gate (gate #5 of the 13-gate cascade) must skip the
+# stale unit — WITH a written reason — and select only the active successor.
+kcp_version: "0.26"
+project: acme-policy
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME Compliance"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  # Superseded: still in the manifest for provenance, but retired by its successor.
+  - id: refund-policy-2024
+    path: policies/refund-2024.md
+    intent: "What is the ACME refund policy and how are customer refunds processed?"
+    audience: [agent, human]
+    triggers: [refund, return, policy, money back, reimbursement]
+    temporal:
+      valid_from: "2024-01-01"
+      superseded_by: refund-policy-2026-03
+
+  # Active successor.
+  - id: refund-policy-2026-03
+    path: policies/refund-2026-03.md
+    intent: "What is the ACME refund policy and how are customer refunds processed?"
+    audience: [agent, human]
+    triggers: [refund, return, policy, money back, reimbursement]
+    temporal:
+      valid_from: "2026-03-01"

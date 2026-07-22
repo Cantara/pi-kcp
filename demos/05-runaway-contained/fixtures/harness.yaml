@@ -1,0 +1,45 @@
+# Demo 5 harness config — the real kcp-harness MCP proxy.
+#
+# Paths here are relative to the FIXTURES directory so a human can run:
+#     cd 05-runaway-contained/fixtures
+#     kcp-harness serve --config harness.yaml
+# run.mjs renders an absolute-path copy into a temp workdir for an isolated run
+# (it rewrites the __TOKENS__ below), so both a human and the script use the
+# same governance — only the audit/approvals/sandbox locations differ.
+version: "1.0"
+
+governance:
+  domains:
+    # One governed domain. `paths` is what the proxy CLASSIFIES as governed:
+    # ops/ (the skill's turf) AND secrets/ (an adjacent governed area the skill
+    # is NOT scoped for). The skill's own action_scope (ops/ only) is the tighter
+    # allowlist the conformance gate then enforces on every action.
+    - manifest: "__MANIFEST__"
+      paths:
+        - "ops/"
+        - "secrets/"
+      skills:
+        - "Skill"
+
+  policy:
+    fail_closed: true
+    audit_all: true
+    max_units: 5
+
+  # Approval store must exist so a conformance HOLD can open a ticket. No broad
+  # rules — the conformance gate opens the ticket itself (role: governance-reviewer).
+  approvals:
+    provider: file
+    dir: "__APPROVALS__"
+    rules: []
+
+downstream:
+  - name: "sandbox-fs"
+    command: "node"
+    args:
+      - "__DOWNSTREAM__"
+    env:
+      SANDBOX_ROOT: "__SANDBOX__"
+
+audit:
+  path: "__AUDIT__"

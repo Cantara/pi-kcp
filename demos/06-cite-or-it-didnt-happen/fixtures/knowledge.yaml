@@ -1,0 +1,32 @@
+# Demo 6 fixture — "Cite or it didn't happen"
+#
+# Two knowledge units the agent is allowed to load. Grounding holds every
+# sentence of a synthesized answer to THESE loaded, hash-pinned units: a claim
+# that a loaded unit supports grounds (with the unit's sha256 pinned); a claim
+# no loaded unit supports is surfaced as an explicit gap.
+kcp_version: "0.26"
+project: acme-sre
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME SRE"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  - id: key-rotation
+    path: knowledge/key-rotation.md
+    intent: "How and how often are production API keys rotated?"
+    audience: [agent]
+    triggers: [key, rotation, rotate, secret, 90, days]
+  - id: incident-severity
+    path: knowledge/incident-severity.md
+    intent: "What do the incident severity levels mean?"
+    audience: [agent]
+    triggers: [incident, severity, sev, outage, oncall]

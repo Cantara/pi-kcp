@@ -1,0 +1,33 @@
+# Demo 3 fixture — "Out of Bounds"
+#
+# One sanctioned skill with a declared action_scope. The conformance gate holds
+# every action a loaded skill takes to this allowlist. This YAML documents the
+# scope the demo enforces; the demo reads it and feeds the action_scope straight
+# into the real `checkConformance()` from kcp-harness.
+kcp_version: "0.26"
+project: acme-sre
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME SRE"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  - id: deploy-runbook
+    path: playbooks/deploy-runbook.md
+    intent: "How does the release engineer deploy the ACME service?"
+    audience: [agent]
+    triggers: [deploy, release, runbook, ops]
+    kind: skill
+    load_eligible: true
+    # The allowlist the conformance gate enforces on every action this skill takes.
+    action_scope:
+      tools: [read_file, write_file]
+      paths: ["ops/", "deploy/"]

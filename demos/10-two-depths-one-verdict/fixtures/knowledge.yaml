@@ -1,0 +1,39 @@
+# Demo 10 fixture — one manifest, adjudicated at two depths.
+#
+# deploy-skill's action_scope (tools: read_file/write_file, paths: ops/) is the
+# SAME allowlist whether the action is caught proxy-depth (kcp-harness serve) or
+# runtime-depth (pi-kcp's HarnessConformanceChecker). Both resolve THIS scope and
+# hand it to the SAME pure checkConformance adjudicator.
+kcp_version: "0.26"
+project: acme-deploy
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME SRE"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  - id: deploy-skill
+    path: playbooks/deploy-skill.md
+    intent: "Deploy the ACME service to production using the ops runbook."
+    audience: [agent]
+    triggers: [deploy, release, production, playbook, skill]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [read_file, write_file]
+      paths: ["ops/"]
+
+  # In-scope ops document so the governor's auto-plan can approve the in-scope read.
+  - id: svc-config
+    path: ops/service.conf
+    intent: "access ops/service.conf"
+    audience: [agent]
+    triggers: [ops, service, config, access]

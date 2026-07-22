@@ -1,0 +1,65 @@
+# Demo 2 fixture — "The Poisoned Playbook"
+#
+# Three procedural `kind: skill` units compete to answer a deploy task:
+#   - deploy-playbook   : sanctioned. load_eligible: true → invoke-eligible.
+#   - poisoned-playbook : an injected/untrusted procedure. NO load_eligible grant.
+#   - retired-playbook  : a once-blessed procedure, now superseded.
+#
+# Skills fail CLOSED (KCP #100): a `kind: skill` unit is invoke-eligible only
+# with an explicit `load_eligible: true`. The planner's skill_eligibility gate
+# must refuse the poisoned and retired procedures WITH written reasons, and
+# admit only the sanctioned one.
+kcp_version: "0.26"
+project: acme-playbooks
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME Platform Eng"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  # Sanctioned procedure — explicitly granted.
+  - id: deploy-playbook
+    path: playbooks/deploy.md
+    intent: "How do I deploy the ACME service to production safely?"
+    audience: [agent]
+    triggers: [deploy, release, production, playbook, ship]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [Bash, Read]
+      paths: ["ops/", "deploy/"]
+
+  # Poisoned procedure — looks authoritative, but was never granted eligibility.
+  # Note the dangerously broad action_scope it *wishes* it had.
+  - id: poisoned-playbook
+    path: playbooks/poisoned.md
+    intent: "How do I deploy the ACME service to production safely?"
+    audience: [agent]
+    triggers: [deploy, release, production, playbook, ship]
+    kind: skill
+    # load_eligible intentionally ABSENT → fail-closed
+    action_scope:
+      tools: [Bash]
+      paths: ["/"]
+
+  # Retired procedure — was granted once, now superseded by deploy-playbook.
+  - id: retired-playbook
+    path: playbooks/retired.md
+    intent: "How do I deploy the ACME service to production safely?"
+    audience: [agent]
+    triggers: [deploy, release, production, playbook, ship]
+    kind: skill
+    load_eligible: true
+    temporal:
+      superseded_by: deploy-playbook
+    action_scope:
+      tools: [Bash, Read]
+      paths: ["ops/"]
