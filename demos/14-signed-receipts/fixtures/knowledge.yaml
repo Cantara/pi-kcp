@@ -1,0 +1,34 @@
+# Demo 14 fixture — a spend envelope covering two paid data vendors.
+#
+# buy-insight may buy from either sanctioned vendor, in USDC, up to 5000 each.
+# Two in-scope purchases settle and produce ed25519-signed purchase receipts —
+# the non-repudiable, verifiable, exportable record of provable spend.
+kcp_version: "0.26"
+project: acme-procurement
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME Procurement"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  - id: buy-insight
+    path: buy-insight/SKILL.md
+    intent: "Buy paid market-insight resources from sanctioned vendors over x402."
+    audience: [agent]
+    triggers: [buy, purchase, insight, x402, procure, skill]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [read, fetch, buy]
+      spend:
+        allowed_vendors: ["0xVendorAcmeData", "0xVendorBetaFeed"]
+        max_spend: 5000
+        currency: USDC

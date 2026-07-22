@@ -1,0 +1,36 @@
+# Demo 12 fixture — the sanctioned shopping skill.
+#
+# buy-insight is the ONE procedure the autonomous agent loads before it may spend.
+# Its action_scope.spend is the envelope every purchase is held to: it may pay ONLY
+# the allowed vendor, ONLY in USDC, and ONLY up to max_spend. The x402 purchase
+# below (vendor 0xVendorAcmeData, 250 USDC) sits inside that envelope → the
+# purchase-conformance gate ALLOWS it, the wallet authorizes, settlement clears.
+kcp_version: "0.26"
+project: acme-procurement
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME Procurement"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  - id: buy-insight
+    path: buy-insight/SKILL.md
+    intent: "Buy a paid market-insight resource over x402, within the spend envelope."
+    audience: [agent]
+    triggers: [buy, purchase, insight, x402, procure, skill]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [read, fetch, buy]
+      spend:
+        allowed_vendors: ["0xVendorAcmeData"]
+        max_spend: 5000
+        currency: USDC
