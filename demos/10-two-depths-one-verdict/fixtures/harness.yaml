@@ -1,0 +1,33 @@
+# Demo 10 harness config — the real kcp-harness MCP proxy (proxy-depth).
+# __TOKENS__ are rewritten to absolute paths by run.mjs for an isolated run.
+version: "1.0"
+
+governance:
+  domains:
+    - manifest: "__MANIFEST__"
+      paths:
+        - "ops/"
+        - "secrets/"
+      skills:
+        - "Skill"
+
+  policy:
+    fail_closed: true
+    audit_all: true
+    max_units: 5
+
+  approvals:
+    provider: file
+    dir: "__APPROVALS__"
+    rules: []
+
+downstream:
+  - name: "sandbox-fs"
+    command: "node"
+    args:
+      - "__DOWNSTREAM__"
+    env:
+      SANDBOX_ROOT: "__SANDBOX__"
+
+audit:
+  path: "__AUDIT__"

@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Run every pi-kcp defendable-agent demo end-to-end. Exits non-zero if any demo
-# fails a check. No LLM required — every demo in this batch is deterministic.
+# fails a check.
+#
+# Batch 1 (01–05) is fully deterministic — no LLM, no external service.
+# Batch 2 (06–10) adds the LLM-dependent gates + external-service demos; each
+# DEGRADES GRACEFULLY:
+#   • 06/07 always run their deterministic adjudication; they additionally call a
+#     real model only when ANTHROPIC_API_KEY is set.
+#   • 08 runs the real kcp-memory (Java) daemon over HTTP; if Java/the jar is
+#     unavailable it prints the prereq and exits 0 (never fails the suite).
+#   • 10 transpiles pi-kcp's real conformance checker with `bun` if present,
+#     otherwise falls back to the same shared adjudicator.
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -15,6 +25,11 @@ demos=(
   "03-out-of-bounds-conformance/run.mjs"
   "04-auditors-thursday/run.mjs"
   "05-runaway-contained/run.mjs"
+  "06-cite-or-it-didnt-happen/run.mjs"
+  "07-confident-fool/run.mjs"
+  "08-forgotten-memory/run.mjs"
+  "09-research-assistant/run.mjs"
+  "10-two-depths-one-verdict/run.mjs"
 )
 
 fails=0

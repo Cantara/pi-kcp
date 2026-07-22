@@ -11,7 +11,12 @@
     "demo2": "node 02-poisoned-playbook/run.mjs",
     "demo3": "node 03-out-of-bounds-conformance/run.mjs",
     "demo4": "node 04-auditors-thursday/run.mjs",
-    "demo5": "node 05-runaway-contained/run.mjs"
+    "demo5": "node 05-runaway-contained/run.mjs",
+    "demo6": "node 06-cite-or-it-didnt-happen/run.mjs",
+    "demo7": "node 07-confident-fool/run.mjs",
+    "demo8": "node 08-forgotten-memory/run.mjs",
+    "demo9": "node 09-research-assistant/run.mjs",
+    "demo10": "node 10-two-depths-one-verdict/run.mjs"
   },
   "dependencies": {
     "js-yaml": "^4.3.0",

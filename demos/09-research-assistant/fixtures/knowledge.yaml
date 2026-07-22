@@ -1,0 +1,59 @@
+# Demo 9 fixture — the well-behaved autonomous research agent.
+#
+# research-topic is a READ-ONLY skill. Its action_scope authorizes read/search
+# tools over research/, docs/, knowledge/ — and NO write tools. Every step the
+# agent takes below lands inside this scope, so the governor approves each one
+# and the conformance gate holds NONE. Governance as an enabler: a bounded
+# autonomous agent runs freely inside its declared box.
+kcp_version: "0.26"
+project: acme-research
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME Research"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  # The read-only autonomous procedure.
+  - id: research-topic
+    path: playbooks/research-topic.md
+    intent: "Research a topic across the internal corpus and produce a cited summary."
+    audience: [agent]
+    triggers: [research, topic, summary, investigate, survey, skill]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [read_file, search_files, web_fetch]
+      paths: ["research/", "docs/", "knowledge/"]
+
+  # Directory index unit — backs the in-scope search over research/.
+  - id: research-index
+    path: research/
+    intent: "access research/ index"
+    audience: [agent]
+    triggers: [research, index, search, access]
+
+  # Corpus documents (each backs an in-scope read; the governor's auto-plan
+  # needs a unit whose path overlaps each target file).
+  - id: market-scan
+    path: research/market-scan.md
+    intent: "access research/market-scan.md"
+    audience: [agent]
+    triggers: [research, market, scan, access]
+  - id: architecture-doc
+    path: docs/architecture.md
+    intent: "access docs/architecture.md"
+    audience: [agent]
+    triggers: [docs, architecture, proxy, access]
+  - id: glossary
+    path: knowledge/glossary.md
+    intent: "access knowledge/glossary.md"
+    audience: [agent]
+    triggers: [knowledge, glossary, scope, access]

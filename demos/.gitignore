@@ -2,3 +2,7 @@
 .out/
 .kcp-harness/
 **/sandbox/
+
+# Generated build artifacts: demo 8 compiles a Java launcher, demo 10 transpiles
+# pi-kcp's real TS checker — both into a local .gen/ that is rebuilt on demand.
+**/.gen/
