@@ -11,6 +11,10 @@
 #     unavailable it prints the prereq and exits 0 (never fails the suite).
 #   • 10 transpiles pi-kcp's real conformance checker with `bun` if present,
 #     otherwise falls back to the same shared adjudicator.
+# Batch 3 (11–14) is the COMMERCE batch — governed value transfer (#139):
+#   • 11 is fully deterministic (the real planner's money_budget gate).
+#   • 12/13/14 transpile pi-kcp's real wallet + governed-loop seam with `bun`; if
+#     `bun` is absent they print the prereq and exit 0 (never fail the suite).
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -30,6 +34,10 @@ demos=(
   "08-forgotten-memory/run.mjs"
   "09-research-assistant/run.mjs"
   "10-two-depths-one-verdict/run.mjs"
+  "11-budgeted-researcher/run.mjs"
+  "12-shopping-agent-x402/run.mjs"
+  "13-runaway-spender/run.mjs"
+  "14-signed-receipts/run.mjs"
 )
 
 fails=0

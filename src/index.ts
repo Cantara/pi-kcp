@@ -5,6 +5,7 @@ import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-a
 import { GovernedLoop } from "./governed-loop.js";
 import { type ConformanceChecker } from "./conformance.js";
 import { HarnessConformanceChecker } from "./harness-conformance.js";
+import { MockPaymentExecutor, MockWallet, type PaymentExecutor, type WalletProvider } from "./wallet.js";
 
 export { PassThroughChecker, passThroughChecker } from "./conformance.js";
 export type { ConformanceChecker, ConformanceContext, ConformanceResult, ObservedAction } from "./conformance.js";
@@ -16,8 +17,32 @@ export {
 } from "./harness-conformance.js";
 export type { CheckConformanceFn, HarnessConformanceOptions, ScopeResolver } from "./harness-conformance.js";
 export type { ActionScope, ConformanceVerdict } from "kcp-harness";
-export { GovernedLoop } from "./governed-loop.js";
-export type { GovernanceDecision, PlanProduced } from "./governed-loop.js";
+export { GovernedLoop, detectPurchase } from "./governed-loop.js";
+export type { GovernanceDecision, PlanProduced, PurchaseIntent, SettlementResult, GovernedLoopHooks, GovernedLoopOptions } from "./governed-loop.js";
+export {
+  MockWallet,
+  NoopWallet,
+  MockPaymentExecutor,
+  PaymentDeniedError,
+  mockWallet,
+  requirementsFromPurchase,
+  purchaseFromRequirements,
+  parsePaymentRequirements,
+  DEMO_SIGNING_KEY_PEM,
+  DEMO_SIGNING_KEY_ID,
+  X_PAYMENT_HEADER,
+  X_PAYMENT_RESPONSE_HEADER,
+} from "./wallet.js";
+export type {
+  WalletProvider,
+  PaymentExecutor,
+  PaymentRequirements,
+  SignedPayment,
+  PaymentReceipt,
+  PaymentRequestFn,
+  PaymentGovernFn,
+  PaymentGovernanceDecision,
+} from "./wallet.js";
 export { childContext, isTraceparent, mintTraceparent } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
 export {
@@ -45,6 +70,17 @@ export interface RegisterOptions {
    * `conformanceChecker` is injected.
    */
   requireActiveSkill?: boolean;
+  /**
+   * The wallet seam used to authorize governed spends at the tool_call boundary (#139).
+   * Defaults to a deterministic {@link MockWallet}. Inject a real signer in production, or a
+   * {@link NoopWallet}/stub in tests.
+   */
+  walletProvider?: WalletProvider;
+  /**
+   * The payment-execution seam that runs the x402 handshake and settlement. Defaults to a
+   * {@link MockPaymentExecutor} over `walletProvider`.
+   */
+  paymentExecutor?: PaymentExecutor;
 }
 
 const DEFAULT_MEMORY_URL = "http://localhost:7735";
@@ -417,8 +453,14 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   const builtInChecker = options.conformanceChecker
     ? undefined
     : new HarnessConformanceChecker({ requireActiveSkill: options.requireActiveSkill ?? false });
+  // Payment-execution seam (#139): the wallet authorizes a conformant spend and the executor
+  // settles it. Both default to deterministic, no-chain mocks; the executor shares the wallet.
+  const wallet = options.walletProvider ?? new MockWallet();
+  const executor = options.paymentExecutor ?? new MockPaymentExecutor(wallet);
   const loop = new GovernedLoop({
     checker: options.conformanceChecker ?? builtInChecker!,
+    wallet,
+    executor,
   });
   const getCommands = (): SlashCommandInfo[] => {
     try {

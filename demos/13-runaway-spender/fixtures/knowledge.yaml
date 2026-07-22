@@ -1,0 +1,36 @@
+# Demo 13 fixture — the SAME shopping skill, a tighter envelope.
+#
+# buy-insight may spend ONLY up to 500 USD, ONLY in USD, ONLY to "acme-data".
+# The agent below tries to overspend (900 USD) and to pay a vendor it was never
+# authorized to touch ("sketchy-exfil-co"). The purchase-conformance gate holds
+# both IN-LOOP with the arithmetic/allowlist reason — before the wallet is asked
+# to authorize anything. The commerce twin of demo 05's out-of-scope containment.
+kcp_version: "0.26"
+project: acme-procurement
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME Procurement"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  - id: buy-insight
+    path: buy-insight/SKILL.md
+    intent: "Buy a paid market-insight resource, within a tight spend envelope."
+    audience: [agent]
+    triggers: [buy, purchase, insight, procure, skill]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [read, buy]
+      spend:
+        allowed_vendors: ["acme-data"]
+        max_spend: 500
+        currency: USD

@@ -1,0 +1,72 @@
+# Demo 11 fixture — paid knowledge sources under a spending budget.
+#
+# A researcher agent plans over a corpus where some sources are FREE and some are
+# pay-per-request (x402). The planner's `money_budget` gate charges each selected
+# pay-per-request unit against a `--budget` ceiling and SKIPS the one that would
+# overspend — with the exact arithmetic reason. Deterministic, no LLM, no network.
+#
+# Prices are whole-USDC for readability; the gate arithmetic is identical at any
+# scale. `payment.methods:[{type:x402, price_per_request, currency}]` is the real
+# KCP unit-payment schema the planner reads.
+kcp_version: "0.26"
+project: acme-market-research
+version: 1.0.0
+updated: "2026-07-01"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME Research"
+
+# Root default: the corpus is free unless a unit declares its own paid method.
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  # ---- Free baseline source (always affordable) ---------------------------
+  - id: free-market-primer
+    path: sources/free-market-primer.md
+    intent: "Free primer on governed autonomous-agent market trends."
+    audience: [agent]
+    triggers: [research, governed, autonomous, agents, market, adoption, trends, primer]
+
+  # ---- Paid sources (x402, pay-per-request) -------------------------------
+  # Highest-relevance paid report — fits the budget and is bought first.
+  - id: premium-adoption-report
+    path: sources/premium-adoption-report.md
+    intent: "Premium 2026 adoption report on governed autonomous agents (paid)."
+    audience: [agent]
+    triggers: [research, governed, autonomous, agents, adoption, report, premium, 2026, enterprise]
+    payment:
+      methods:
+        - type: x402
+          price_per_request: 3
+          currency: USDC
+
+  # A second premium report — once the first is bought there is not enough left,
+  # so the money_budget gate skips THIS one with the arithmetic reason.
+  - id: premium-forecast-report
+    path: sources/premium-forecast-report.md
+    intent: "Premium multi-year forecast on governed-agent spend (paid)."
+    audience: [agent]
+    triggers: [research, governed, autonomous, agents, adoption, forecast, report, premium, spend]
+    payment:
+      methods:
+        - type: x402
+          price_per_request: 4
+          currency: USDC
+
+  # A cheaper paid source — still fits after the first purchase, proving the gate
+  # keeps walking (greedy, not knapsack): a lower-priced unit can still be bought.
+  - id: paid-vendor-brief
+    path: sources/paid-vendor-brief.md
+    intent: "Short paid vendor brief on governed-agent tooling (paid)."
+    audience: [agent]
+    triggers: [research, governed, autonomous, agents, vendor, brief, tooling, paid]
+    payment:
+      methods:
+        - type: x402
+          price_per_request: 2
+          currency: USDC

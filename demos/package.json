@@ -16,11 +16,15 @@
     "demo7": "node 07-confident-fool/run.mjs",
     "demo8": "node 08-forgotten-memory/run.mjs",
     "demo9": "node 09-research-assistant/run.mjs",
-    "demo10": "node 10-two-depths-one-verdict/run.mjs"
+    "demo10": "node 10-two-depths-one-verdict/run.mjs",
+    "demo11": "node 11-budgeted-researcher/run.mjs",
+    "demo12": "node 12-shopping-agent-x402/run.mjs",
+    "demo13": "node 13-runaway-spender/run.mjs",
+    "demo14": "node 14-signed-receipts/run.mjs"
   },
   "dependencies": {
     "js-yaml": "^4.3.0",
-    "kcp-agent": "0.16.0",
-    "kcp-harness": "0.8.0"
+    "kcp-agent": "0.17.0",
+    "kcp-harness": "0.9.0"
   }
 }
