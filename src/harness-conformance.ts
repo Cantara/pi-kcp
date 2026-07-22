@@ -9,8 +9,15 @@
  *   2. adjudicates the action against that scope with the harness's pure, no-LLM
  *      {@link checkConformance} — the SAME deterministic decision the harness proxy makes.
  *
- * Fail-closed everywhere, consistent with the harness: no active skill, an unresolvable
- * scope, or a scope that declares nothing → nothing is authorized and the action is held.
+ * Conformance bounds a *skill's* actions. By default it therefore engages only when a skill
+ * is active: with no skill loaded the action is unscoped/general and passes conformance (it is
+ * still governed by the other gates + approval, which conformance does not replace). Once a
+ * skill is active, enforcement is fail-closed and consistent with the harness: an unresolvable
+ * scope or a scope that declares nothing → nothing is authorized and the action is held.
+ *
+ * Strict mode ({@link HarnessConformanceOptions.requireActiveSkill}, default `false`) restores
+ * the fail-closed-when-no-skill behavior for high-assurance autonomous agents that should only
+ * ever act within a declared skill.
  *
  * Scope resolution — how `action_scope` is obtained today:
  *   kcp-agent's `plan --json` / `plan --trace --json` do NOT currently surface a planned
@@ -57,6 +64,12 @@ export interface HarnessConformanceOptions {
   resolveScope?: ScopeResolver;
   /** Injectable adjudicator. Default: the real, pure harness `checkConformance`. */
   check?: CheckConformanceFn;
+  /**
+   * Strict mode (default `false`). When `true`, an action taken with **no active skill** is
+   * fail-closed (held for review) instead of passing through. For high-assurance autonomous
+   * agents that should only ever act within a declared skill's `action_scope`.
+   */
+  requireActiveSkill?: boolean;
 }
 
 const DEFAULT_MANIFEST = "knowledge.yaml";
@@ -157,21 +170,36 @@ export class ManifestScopeResolver implements ScopeResolver {
 export class HarnessConformanceChecker implements ConformanceChecker {
   private readonly resolver: ScopeResolver;
   private readonly adjudicate: CheckConformanceFn;
+  /**
+   * Strict mode: when `true`, an action with no active skill is fail-closed. Mutable so the
+   * built-in checker can pick the value up from `.pi/kcp.json` at the turn boundary; embedders
+   * that pin it via `RegisterOptions`/constructor options should treat it as fixed.
+   */
+  requireActiveSkill: boolean;
   /** Resolved scope per active skill (keyed by cwd + skill path). */
   private readonly scopeCache = new Map<string, ActionScope | undefined>();
 
   constructor(options: HarnessConformanceOptions = {}) {
     this.resolver = options.resolveScope ?? new ManifestScopeResolver(options.manifest ?? DEFAULT_MANIFEST);
     this.adjudicate = options.check ?? harnessCheckConformance;
+    this.requireActiveSkill = options.requireActiveSkill ?? false;
   }
 
   async check(action: ObservedAction, ctx: ConformanceContext): Promise<ConformanceResult> {
     const skill = action.skillContext;
     if (!skill) {
-      // Fail-closed: with no skill loaded there is no authority to check against.
+      // Conformance bounds a skill's actions. With no skill active the action is
+      // unscoped/general — conformance passes and defers to the other gates + approval.
+      if (!this.requireActiveSkill) {
+        return {
+          conformant: true,
+          reason: `no active skill — conformance not applicable; "${action.toolName}" deferred to the other gates`,
+        };
+      }
+      // Strict mode: only ever act within a declared skill → fail-closed with no skill.
       return {
         conformant: false,
-        reason: `no active skill — fail-closed; action "${action.toolName}" is held for review`,
+        reason: `no active skill — fail-closed (requireActiveSkill); action "${action.toolName}" is held for review`,
       };
     }
 

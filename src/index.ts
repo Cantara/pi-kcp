@@ -33,10 +33,18 @@ export type { SkillSelected, SkillSource } from "./skill-detection.js";
 export interface RegisterOptions {
   /**
    * The conformance seam wired at the tool_call boundary. Defaults to the real
-   * {@link HarnessConformanceChecker} (kcp-harness-backed, fail-closed). Inject
+   * {@link HarnessConformanceChecker} (kcp-harness-backed). Inject
    * {@link passThroughChecker} to disable enforcement, or a stub for tests.
    */
   conformanceChecker?: ConformanceChecker;
+  /**
+   * Strict conformance mode for the built-in checker (default `false`). When `true`, tool
+   * calls taken with **no active skill** are fail-closed instead of passing through to the
+   * other gates. When provided here it pins the value; otherwise the built-in checker reads
+   * `requireActiveSkill` from `.pi/kcp.json` at each turn. Ignored when a custom
+   * `conformanceChecker` is injected.
+   */
+  requireActiveSkill?: boolean;
 }
 
 const DEFAULT_MEMORY_URL = "http://localhost:7735";
@@ -52,6 +60,12 @@ export interface KcpConfig {
   maxResults: number;
   timeoutMs: number;
   manifest: string;
+  /**
+   * Strict conformance mode (default `false`). When `true`, the built-in conformance checker
+   * fail-closes tool calls taken with no active skill; when `false`, such general actions pass
+   * conformance and defer to the other gates + approval.
+   */
+  requireActiveSkill: boolean;
   agentCli?: string;
 }
 
@@ -127,6 +141,7 @@ export const defaultConfig: KcpConfig = {
   maxResults: DEFAULT_MAX_RESULTS,
   timeoutMs: DEFAULT_TIMEOUT_MS,
   manifest: "knowledge.yaml",
+  requireActiveSkill: false,
 };
 
 export function shouldRecall(prompt: string): boolean {
@@ -216,6 +231,7 @@ export function parseConfig(value: unknown): LoadedConfig {
     errors.push("timeoutMs must be an integer from 50 to 5000");
   }
   if (value.manifest !== undefined && (typeof value.manifest !== "string" || value.manifest.trim() === "")) errors.push("manifest must be a non-empty string");
+  if (value.requireActiveSkill !== undefined && typeof value.requireActiveSkill !== "boolean") errors.push("requireActiveSkill must be a boolean");
   if (value.agentCli !== undefined && (typeof value.agentCli !== "string" || value.agentCli.trim() === "")) errors.push("agentCli must be a non-empty string");
 
   if (errors.length > 0) {
@@ -391,10 +407,18 @@ function publish(pi: ExtensionAPI, title: string, content: string, correlationId
 export default function register(pi: ExtensionAPI, options: RegisterOptions = {}): void {
   // Runtime-depth governed loop: holds the per-turn correlation id (#29), observes skill
   // selection (#28), and gates tool calls through the conformance seam (#27, Wave 3). The
-  // default checker is the kcp-harness-backed HarnessConformanceChecker: a real out-of-scope
-  // tool call is blocked in-loop with the harness's written reason (fail-closed).
+  // default checker is the kcp-harness-backed HarnessConformanceChecker: once a skill is
+  // active, a real out-of-scope tool call is blocked in-loop with the harness's written
+  // reason (fail-closed). With no skill active it defers to the other gates unless strict
+  // mode (requireActiveSkill) is on.
+  //
+  // requireActiveSkill precedence: an explicit RegisterOptions value pins strict mode; when
+  // omitted, the built-in checker reads it from `.pi/kcp.json` at each turn boundary.
+  const builtInChecker = options.conformanceChecker
+    ? undefined
+    : new HarnessConformanceChecker({ requireActiveSkill: options.requireActiveSkill ?? false });
   const loop = new GovernedLoop({
-    checker: options.conformanceChecker ?? new HarnessConformanceChecker(),
+    checker: options.conformanceChecker ?? builtInChecker!,
   });
   const getCommands = (): SlashCommandInfo[] => {
     try {
@@ -502,8 +526,13 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   });
 
   // Mint a fresh per-turn correlation id (#29) at the turn boundary.
-  pi.on("turn_start", (event) => {
+  pi.on("turn_start", async (event, ctx) => {
     loop.beginTurn(event.turnIndex);
+    // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
+    // pinned it. Only the checker we own is mutated (never an injected one).
+    if (builtInChecker && options.requireActiveSkill === undefined) {
+      builtInChecker.requireActiveSkill = (await loadConfig(ctx.cwd)).config.requireActiveSkill;
+    }
   });
 
   pi.on("input", async (event, ctx) => {
