@@ -1,7 +1,30 @@
 import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
+import { GovernedLoop } from "./governed-loop.js";
+import { type ConformanceChecker } from "./conformance.js";
+
+export { PassThroughChecker, passThroughChecker } from "./conformance.js";
+export type { ConformanceChecker, ConformanceContext, ConformanceResult, ObservedAction } from "./conformance.js";
+export { GovernedLoop } from "./governed-loop.js";
+export type { GovernanceDecision, PlanProduced } from "./governed-loop.js";
+export { childContext, isTraceparent, mintTraceparent } from "./correlation.js";
+export type { TurnContext } from "./correlation.js";
+export {
+  detectAgentSkillLoad,
+  detectForcedSkill,
+  isSkillReadPath,
+  resolveSkillName,
+  skillNameFromPath,
+} from "./skill-detection.js";
+export type { SkillSelected, SkillSource } from "./skill-detection.js";
+
+/** Options for {@link register}; lets tests / embedders inject a conformance checker. */
+export interface RegisterOptions {
+  /** The conformance seam wired at the tool_call boundary (default: allow-all pass-through). */
+  conformanceChecker?: ConformanceChecker;
+}
 
 const DEFAULT_MEMORY_URL = "http://localhost:7735";
 const DEFAULT_TIMEOUT_MS = 400;
@@ -220,10 +243,11 @@ async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
   }
 }
 
-export async function recall(memoryUrl: string, query: string, config: KcpConfig): Promise<MemorySession[]> {
+export async function recall(memoryUrl: string, query: string, config: KcpConfig, correlationId?: string): Promise<MemorySession[]> {
   const url = new URL("/search", `${memoryUrl.replace(/\/$/, "")}/`);
   url.searchParams.set("q", query);
   url.searchParams.set("limit", String(config.maxResults));
+  if (correlationId) url.searchParams.set("traceparent", correlationId);
   return parseSearchResults(await fetchJson(url.toString(), config.timeoutMs));
 }
 
@@ -289,13 +313,14 @@ function agentNotFoundMessage(config: KcpConfig): string {
   return `kcp-agent CLI was not found.${configured} Set agentCli in .pi/kcp.json, set KCP_AGENT_CLI, or install the kcp-agent executable.`;
 }
 
-async function runKcpAgent(pi: ExtensionAPI, cwd: string, args: string[], config: KcpConfig): Promise<string> {
+async function runKcpAgent(pi: ExtensionAPI, cwd: string, args: string[], config: KcpConfig, correlationId?: string): Promise<string> {
   const invocation = await findAgentInvocation(pi, config);
   if (!invocation) throw new Error(agentNotFoundMessage(config));
 
+  const correlationArgs = correlationId ? ["--correlation-id", correlationId] : [];
   const result = await pi.exec(
     invocation.command,
-    [...invocation.args, ...args],
+    [...invocation.args, ...args, ...correlationArgs],
     { timeout: 15_000 },
   );
   if (result.code !== 0) {
@@ -313,8 +338,8 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function runPlan(pi: ExtensionAPI, cwd: string, intent: string, config: KcpConfig): Promise<string> {
-  const output = await runKcpAgent(pi, cwd, ["plan", intent, "--manifest", resolve(cwd, config.manifest), "--json"], config);
+async function runPlan(pi: ExtensionAPI, cwd: string, intent: string, config: KcpConfig, correlationId?: string): Promise<string> {
+  const output = await runKcpAgent(pi, cwd, ["plan", intent, "--manifest", resolve(cwd, config.manifest), "--json"], config, correlationId);
   return normalizePlanJson(output);
 }
 
@@ -338,18 +363,32 @@ function show(ctx: { hasUI: boolean; ui: { notify(message: string, level: "info"
   else console.log(message);
 }
 
-function publish(pi: ExtensionAPI, title: string, content: string): void {
+function publish(pi: ExtensionAPI, title: string, content: string, correlationId?: string): void {
   pi.sendMessage(
     {
       customType: "pi-kcp",
       content: `## ${title}\n\n${truncate(content)}`,
       display: true,
+      ...(correlationId ? { details: { correlationId } } : {}),
     },
     { deliverAs: "nextTurn" },
   );
 }
 
-export default function register(pi: ExtensionAPI): void {
+export default function register(pi: ExtensionAPI, options: RegisterOptions = {}): void {
+  // Runtime-depth governed loop: holds the per-turn correlation id (#29), observes skill
+  // selection (#28), and gates tool calls through the conformance seam (#27, Wave 3).
+  const loop = new GovernedLoop(
+    options.conformanceChecker ? { checker: options.conformanceChecker } : {},
+  );
+  const getCommands = (): SlashCommandInfo[] => {
+    try {
+      return pi.getCommands();
+    } catch {
+      return [];
+    }
+  };
+
   pi.registerCommand("kcp", {
     description: "Use KCP memory and deterministic knowledge plans",
     handler: async (args, ctx) => {
@@ -377,13 +416,14 @@ export default function register(pi: ExtensionAPI): void {
           return;
         }
         try {
-          const sessions = await recall(config.memoryUrl, query, config);
+          const correlationId = loop.currentCorrelationId();
+          const sessions = await recall(config.memoryUrl, query, config, correlationId);
           const block = formatRecallBlock(query, sessions);
           if (!block) {
             show(ctx, `No kcp-memory results for: ${query}`);
             return;
           }
-          publish(pi, "KCP recall", block);
+          publish(pi, "KCP recall", block, correlationId);
           show(ctx, `Added ${sessions.length} memory result(s) to the next turn.`);
         } catch (error) {
           show(ctx, `kcp-memory unavailable: ${error instanceof Error ? error.message : String(error)}`, "warning");
@@ -398,8 +438,9 @@ export default function register(pi: ExtensionAPI): void {
           return;
         }
         try {
-          const plan = await runPlan(pi, ctx.cwd, intent, config);
-          publish(pi, "KCP plan", plan);
+          const correlationId = loop.currentCorrelationId();
+          const plan = await runPlan(pi, ctx.cwd, intent, config, correlationId);
+          publish(pi, "KCP plan", plan, correlationId);
           show(ctx, "Added the kcp-agent load plan to the next turn.");
         } catch (error) {
           show(ctx, error instanceof Error ? error.message : String(error), "warning");
@@ -445,12 +486,31 @@ export default function register(pi: ExtensionAPI): void {
     },
   });
 
+  // Mint a fresh per-turn correlation id (#29) at the turn boundary.
+  pi.on("turn_start", (event) => {
+    loop.beginTurn(event.turnIndex);
+  });
+
   pi.on("input", async (event, ctx) => {
     if (event.source === "extension") return { action: "continue" as const };
+    // Detect user-forced skills (#28): `/skill:<name>` selects a skill for the turn.
+    loop.observeInput(event.text, getCommands());
     const config = (await loadConfig(ctx.cwd)).config;
     const transformed = await augmentPrompt(event.text, config);
     return transformed === event.text
       ? { action: "continue" as const }
       : { action: "transform" as const, text: transformed };
+  });
+
+  // Runtime-depth observation + governance boundary (#28 detection, #27 enforcement).
+  // Detects agent skill loads (read of SKILL.md), stamps the action with the turn
+  // correlation id, and blocks non-conformant calls via the injected conformance seam.
+  pi.on("tool_call", async (event, ctx) => {
+    const input = event.input as Record<string, unknown>;
+    const decision = await loop.evaluateToolCall(event.toolName, input, { cwd: ctx.cwd }, getCommands());
+    if (decision.block) {
+      return { block: true, reason: decision.reason };
+    }
+    return undefined;
   });
 }
