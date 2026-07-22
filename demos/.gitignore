@@ -1,0 +1,4 @@
+# Runtime artifacts if a human drives the harness locally (run.mjs uses os.tmpdir).
+.out/
+.kcp-harness/
+**/sandbox/

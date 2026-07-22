@@ -1,0 +1,21 @@
+{
+  "name": "pi-kcp-demos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Runnable, E2E-tested demos of the KCP defendable-agent stack (real kcp-agent + kcp-harness)",
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "demos": "./run-all.sh",
+    "demo1": "node 01-superseded-policy/run.mjs",
+    "demo2": "node 02-poisoned-playbook/run.mjs",
+    "demo3": "node 03-out-of-bounds-conformance/run.mjs",
+    "demo4": "node 04-auditors-thursday/run.mjs",
+    "demo5": "node 05-runaway-contained/run.mjs"
+  },
+  "dependencies": {
+    "js-yaml": "^4.3.0",
+    "kcp-agent": "0.16.0",
+    "kcp-harness": "0.8.0"
+  }
+}
