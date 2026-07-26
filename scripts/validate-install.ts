@@ -109,8 +109,19 @@ async function main(): Promise<void> {
     await mkdir(join(fixture, ".pi"), { recursive: true });
     await writeFile(join(fixture, ".pi-config-placeholder"), "");
     await writeFile(fakeAgent, `#!/usr/bin/env node
-const command = process.argv[2];
-if (command === "plan") console.log(JSON.stringify({ task: process.argv[3], selected: [] }));
+// Mirror the real kcp-agent parser: fail-closed on unknown options, so interface
+// drift between pi-kcp and the kcp-agent CLI fails this harness (pi-kcp#36).
+const KNOWN_OPTIONS = new Set(["--manifest", "--json"]);
+const TAKES_VALUE = new Set(["--manifest"]);
+const argv = process.argv.slice(2);
+for (let i = 1; i < argv.length; i++) {
+  const t = argv[i];
+  if (!t.startsWith("--")) continue;
+  if (!KNOWN_OPTIONS.has(t)) { console.error("Unknown option: " + t); process.exit(2); }
+  if (TAKES_VALUE.has(t)) i++;
+}
+const command = argv[0];
+if (command === "plan") console.log(JSON.stringify({ task: argv[1], selected: [] }));
 else if (command === "validate") console.log(JSON.stringify({ ok: true, findings: [] }));
 else if (command === "init") console.log("knowledge.yaml already exists");
 else process.exit(2);

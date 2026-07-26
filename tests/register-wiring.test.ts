@@ -106,22 +106,23 @@ describe("register() event wiring", () => {
     expect(decision).toBeUndefined();
   });
 
-  it("threads the turn correlation id into the kcp-agent CLI args and published message", async () => {
+  it("stamps the correlation id on the published plan but never on the kcp-agent CLI args", async () => {
+    // No released kcp-agent accepts --correlation-id; its parser fail-closes on
+    // unknown options, so threading the id through the CLI broke every real
+    // /kcp plan (pi-kcp#36). The id must still reach the published message.
     const pi = new FakePi();
     register(pi.asApi());
-    const turn = await pi.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() });
+    await pi.fire("turn_start", { type: "turn_start", turnIndex: 2, timestamp: Date.now() });
 
     await pi.commands.get("kcp")!.handler("plan ship the release", cmdCtx);
 
     const planCall = pi.execCalls.find((call) => call.args.includes("plan"));
     expect(planCall).toBeDefined();
-    const idx = planCall!.args.indexOf("--correlation-id");
-    expect(idx).toBeGreaterThan(-1);
-    const threaded = planCall!.args[idx + 1];
-    expect(isTraceparent(threaded)).toBe(true);
+    expect(planCall!.args.indexOf("--correlation-id")).toBe(-1);
 
     const planMessage = pi.sent.find((m) => m.message.content?.includes("KCP plan"));
-    expect((planMessage?.message.details as { correlationId?: string })?.correlationId).toBe(threaded);
+    const stamped = (planMessage?.message.details as { correlationId?: string })?.correlationId;
+    expect(isTraceparent(stamped ?? "")).toBe(true);
   });
 
   it("detects a user-forced /skill: input without blocking the turn", async () => {
