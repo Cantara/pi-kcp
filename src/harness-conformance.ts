@@ -213,7 +213,7 @@ export class HarnessConformanceChecker implements ConformanceChecker {
   }
 
   private async resolveScopeCached(skill: SkillSelected, ctx: ConformanceContext): Promise<ActionScope | undefined> {
-    const key = `${ctx.cwd} ${skill.skillPath}`;
+    const key = `${ctx.cwd}\u0000${skill.skillPath}`;
     if (this.scopeCache.has(key)) return this.scopeCache.get(key);
 
     let scope: ActionScope | undefined;
