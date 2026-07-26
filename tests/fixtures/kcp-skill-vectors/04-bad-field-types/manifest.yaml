@@ -1,0 +1,13 @@
+kcp_version: "0.26"
+project: vectors
+version: 1.0.0
+language: en
+units:
+  - id: sloppy
+    kind: skill
+    scope: project
+    audience: [agent]
+    action_scope:
+      tools: "git"
+      paths: ["ok/**", ""]
+      rate_limit: 5

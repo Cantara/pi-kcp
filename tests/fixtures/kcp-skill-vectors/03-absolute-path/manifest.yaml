@@ -1,0 +1,14 @@
+kcp_version: "0.26"
+project: vectors
+version: 1.0.0
+language: en
+units:
+  - id: escape-artist
+    path: skills/escape/SKILL.md
+    kind: skill
+    intent: "How do I write outside the repo?"
+    scope: project
+    audience: [agent]
+    action_scope:
+      tools: [bash]
+      paths: ["/etc/passwd", "src/../../other-repo/**"]

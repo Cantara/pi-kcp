@@ -1,0 +1,11 @@
+kcp_version: "0.26"
+project: vectors
+version: 1.0.0
+language: en
+units:
+  - id: deploy
+    path: skills/deploy/SKILL.md
+    kind: skill
+    intent: "Deploy the service to staging"
+    scope: project
+    audience: [agent]

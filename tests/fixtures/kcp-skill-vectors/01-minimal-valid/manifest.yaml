@@ -1,0 +1,15 @@
+kcp_version: "0.26"
+project: vectors
+version: 1.0.0
+language: en
+units:
+  - id: rotate-signing-key
+    path: skills/rotate-signing-key/SKILL.md
+    kind: skill
+    intent: "How do I rotate the manifest signing key safely?"
+    scope: project
+    audience: [agent, operator]
+    action_scope:
+      tools: [kcp-sign, git]
+      paths: ["schema/**", ".well-known/kcp-signing-key"]
+      capabilities: [key-management]
