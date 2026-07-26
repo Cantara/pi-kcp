@@ -17,7 +17,7 @@ This guide is task-oriented. Copy-paste the commands and YAML and adjust paths.
 - The KCP tools this extension talks to, as needed:
   - **kcp-agent** CLI (`0.16.0`) — for `/kcp plan`, `/kcp validate`, `/kcp init`.
   - **kcp-memory** HTTP daemon (`0.33.0`) — for episodic recall.
-  - **kcp-harness** (`0.8.0`) — a dependency; provides the conformance decision
+  - **kcp-harness** (`0.10.1`) — a dependency; provides the conformance decision
     function and the compliance export/audit tooling.
 - A project **`knowledge.yaml`** manifest (create one with `/kcp init`).
 
@@ -107,6 +107,14 @@ Notes on `action_scope`:
 - A dimension you **don't** declare does not constrain that facet.
 - A scope that declares **nothing** authorizes nothing — every action under that skill
   is held (fail-closed).
+
+Authoring conventions for skill units — what a *good* `kind: skill` + `action_scope`
+looks like, an SK001–SK008 linter, conformance vectors with expected verdicts, and a
+curated library of governed playbooks — live in
+[Cantara/kcp-skill](https://github.com/Cantara/kcp-skill). Lint your manifest's skill
+units with `npx kcp-skill-lint knowledge.yaml`; the `vectors/` there are the canonical
+fixtures for testing any producer or consumer of skill units, including this
+extension's conformance seam.
 
 Validate it before relying on it:
 
