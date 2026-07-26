@@ -1,4 +1,4 @@
-kcp_version: "0.25"
+kcp_version: "0.26"
 project: pi-kcp
 version: 0.1.0
 updated: "2026-07-14"
@@ -47,3 +47,15 @@ units:
     scope: project
     audience: [agent, developer]
     triggers: [MCP, provider, Synthesis, directTools, harness]
+
+signing:
+  scheme: ed25519
+  scope: this-manifest
+  public_key: "MCowBQYDK2VwAyEAuipgusnqU9vjf3p2yPVLD/DmERT6tBbLOqEETdxAhMU="
+  signature: "https://raw.githubusercontent.com/Cantara/pi-kcp/main/knowledge.yaml.sig"
+
+# Serving Endpoint Binding (KCP SPEC v0.26 §3.12): authoritative manifest URL.
+# Ignored by pre-0.26 verifiers.
+serving:
+  manifest:
+    - https://raw.githubusercontent.com/Cantara/pi-kcp/main/knowledge.yaml
