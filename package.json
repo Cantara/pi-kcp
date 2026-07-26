@@ -28,7 +28,7 @@
   },
   "dependencies": {
     "js-yaml": "^4.1.0",
-    "kcp-harness": "^0.10.1"
+    "kcp-harness": "^0.10.3"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.80.6",

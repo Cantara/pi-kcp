@@ -1,0 +1,23 @@
+kcp_version: "0.26"
+project: vectors
+version: 1.0.0
+language: en
+units:
+  - id: security
+    path: SECURITY.md
+    kind: policy
+    intent: "Security Policy"
+    scope: global
+    audience: [human]
+  - id: api-schema
+    path: openapi.yaml
+    kind: schema
+    intent: "API definition"
+    scope: project
+    audience: [agent]
+  - id: mystery
+    path: thing.md
+    kind: hologram
+    intent: "Unknown kind must be silently ignored"
+    scope: project
+    audience: [agent]
