@@ -22,6 +22,7 @@ The project deliberately uses separate transport lanes:
 - **Pi extension:** human-facing `/kcp` commands and bounded prompt recall.
 - **kcp-memory:** HTTP for pre-prompt recall; MCP remains available for explicit LLM queries.
 - **kcp-agent:** invoked as a CLI for deterministic knowledge plans.
+- **kcp-skill:** owns the [authoring conventions, linter, and conformance vectors](https://github.com/Cantara/kcp-skill) for the governed skill units this extension enforces.
 - **kcp-commands:** remains responsible for shell command manifests and hooks.
 - **Synthesis or another code-intelligence provider:** accessed through MCP, optionally.
 
