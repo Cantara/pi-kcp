@@ -378,14 +378,17 @@ function agentNotFoundMessage(config: KcpConfig): string {
   return `kcp-agent CLI was not found.${configured} Set agentCli in .pi/kcp.json, set KCP_AGENT_CLI, or install the kcp-agent executable.`;
 }
 
-async function runKcpAgent(pi: ExtensionAPI, cwd: string, args: string[], config: KcpConfig, correlationId?: string): Promise<string> {
+async function runKcpAgent(pi: ExtensionAPI, cwd: string, args: string[], config: KcpConfig): Promise<string> {
   const invocation = await findAgentInvocation(pi, config);
   if (!invocation) throw new Error(agentNotFoundMessage(config));
 
-  const correlationArgs = correlationId ? ["--correlation-id", correlationId] : [];
+  // No correlation id on the CLI: no released kcp-agent accepts --correlation-id,
+  // and its parser fail-closes on unknown options (pi-kcp#36). The turn's id still
+  // reaches kcp-memory (?traceparent=) and the published messages. Re-enable behind
+  // a capability probe once kcp-agent ships the flag (kcp-agent#114).
   const result = await pi.exec(
     invocation.command,
-    [...invocation.args, ...args, ...correlationArgs],
+    [...invocation.args, ...args],
     { timeout: 15_000 },
   );
   if (result.code !== 0) {
@@ -403,8 +406,8 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function runPlan(pi: ExtensionAPI, cwd: string, intent: string, config: KcpConfig, correlationId?: string): Promise<string> {
-  const output = await runKcpAgent(pi, cwd, ["plan", intent, "--manifest", resolve(cwd, config.manifest), "--json"], config, correlationId);
+async function runPlan(pi: ExtensionAPI, cwd: string, intent: string, config: KcpConfig): Promise<string> {
+  const output = await runKcpAgent(pi, cwd, ["plan", intent, "--manifest", resolve(cwd, config.manifest), "--json"], config);
   return normalizePlanJson(output);
 }
 
@@ -520,7 +523,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
         }
         try {
           const correlationId = loop.currentCorrelationId();
-          const plan = await runPlan(pi, ctx.cwd, intent, config, correlationId);
+          const plan = await runPlan(pi, ctx.cwd, intent, config);
           publish(pi, "KCP plan", plan, correlationId);
           show(ctx, "Added the kcp-agent load plan to the next turn.");
         } catch (error) {

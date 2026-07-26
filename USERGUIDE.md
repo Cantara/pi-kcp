@@ -136,8 +136,8 @@ For each turn, the extension runs this loop:
    other gates + approval (conformance bounds a *skill's* actions; it does not govern
    general, unscoped ones). Strict mode (`requireActiveSkill`) instead fail-closes a
    no-skill call — see Configuration.
-5. **Approval / evidence.** The correlation id is stamped on recall lookups, plan
-   invocations, and every published message, so the turn's recall → plan → skill →
+5. **Approval / evidence.** The correlation id is stamped on recall lookups and every
+   published message (including the plan result), so the turn's recall → plan → skill →
    decision chain shares one id.
 
 A blocked call looks like this to the agent:
@@ -233,9 +233,11 @@ tool call surfaces the harness's specific reason (which target/tool/capability f
 so you can see *why* an action was held.
 
 **The correlation chain.** One `traceparent` per turn is threaded to kcp-memory
-(`?traceparent=`), to kcp-agent (`--correlation-id`), and onto published messages. That
-single id lets you line up a turn's recall lookup, its knowledge plan, and its
-conformance decisions.
+(`?traceparent=`) and onto published messages — including the plan result, so the id
+still lines up a turn's recall lookup, its knowledge plan, and its conformance
+decisions. It is not passed to the kcp-agent CLI: no released kcp-agent accepts
+`--correlation-id`, and its parser fail-closes on unknown options (see
+Cantara/kcp-agent#114 for the upstream proposal).
 
 **Compliance artifacts.** Formal export is produced by the `kcp-harness` proxy over its
 append-only audit log. `pi-kcp` shares the harness's decision function and correlation
