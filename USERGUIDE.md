@@ -241,11 +241,38 @@ tool call surfaces the harness's specific reason (which target/tool/capability f
 so you can see *why* an action was held.
 
 **The correlation chain.** One `traceparent` per turn is threaded to kcp-memory
-(`?traceparent=`) and onto published messages — including the plan result, so the id
-still lines up a turn's recall lookup, its knowledge plan, and its conformance
-decisions. It is not passed to the kcp-agent CLI: no released kcp-agent accepts
-`--correlation-id`, and its parser fail-closes on unknown options (see
-Cantara/kcp-agent#114 for the upstream proposal).
+(`?traceparent=`), onto published messages, and — since 0.4.0 — into the kcp-agent plan
+invocation itself, so the plan artifact carries the same id as the turn's recall lookup and
+its conformance decisions.
+
+The flag is passed only when the installed agent documents it. kcp-agent's parser
+fail-closes on unknown options, so passing it blind killed the whole turn against every
+release before 0.22.0 (pi-kcp#36). `pi-kcp` probes `kcp-agent plan --help` rather than
+comparing version strings — version inference breaks on forks, prereleases and
+locally-built agents, while the help text is the binary's own answer about itself — and
+fails closed: an agent it cannot ask is an agent it does not pass the flag to.
+
+**Joining the chain.** The stages do not all record the id in the same form. `pi-kcp` and
+kcp-agent record the full traceparent (`00-<trace>-<span>-01`); kcp-harness records the
+trace-id alone. That is correct rather than a bug — W3C Trace Context defines the span-id as
+identifying the individual operation, so the traceparent string necessarily changes per hop,
+and `childContext()` here changes it deliberately.
+
+So the join key is the **trace-id**. `traceIdOf(value)` normalises whatever a component
+recorded:
+
+```ts
+import { traceIdOf } from "@cantara/pi-kcp";
+
+traceIdOf("00-4bf92f35…4736-00f067aa0ba902b7-01")  // "4bf92f35…4736"
+traceIdOf("4bf92f35…4736")                          // "4bf92f35…4736"  (the harness form)
+traceIdOf("not-an-id")                              // undefined
+```
+
+It returns `undefined` rather than guessing, and rejects the all-zero trace-id: a wrong key
+silently merges unrelated tasks, and an audit with the wrong contents is worse than one with
+a visible hole. kcp-harness exposes the equivalent reduction as `correlationKey`, and a test
+here pins the two to agree.
 
 **Compliance artifacts.** Formal export is produced by the `kcp-harness` proxy over its
 append-only audit log. `pi-kcp` shares the harness's decision function and correlation
