@@ -52,7 +52,12 @@ signing:
   scheme: ed25519
   scope: this-manifest
   public_key: "MCowBQYDK2VwAyEAuipgusnqU9vjf3p2yPVLD/DmERT6tBbLOqEETdxAhMU="
-  signature: "https://raw.githubusercontent.com/Cantara/pi-kcp/main/knowledge.yaml.sig"
+  # Relative, as kcp-agent and kcp-harness declare it: the signature is resolved beside the
+  # manifest, wherever that manifest is read from. This pointed at raw.githubusercontent.com
+  # on main — a branch this repo has not released from since v0.3.3 — so verification fetched
+  # a signature for a different, older manifest and every --require-signature consumer was
+  # refused. That branch also still serves the pre-envelope raw signature format.
+  signature: "knowledge.yaml.sig"
 
 # Serving Endpoint Binding (KCP SPEC v0.26 §3.12): authoritative manifest URL.
 # Ignored by pre-0.26 verifiers.
