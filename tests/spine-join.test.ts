@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { childContext, mintTraceparent, traceIdOf } from "../src/index.js";
-import { deriveCorrelation } from "kcp-harness";
+import { correlationKey, deriveCorrelation } from "kcp-harness";
 
 const TRACEPARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
 const TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736";
@@ -73,5 +73,38 @@ describe("the chain actually joins", () => {
 
     // The naive join — on the recorded value — does not work, which is the point.
     expect(new Set([fromPiKcp, fromKcpAgent, fromHarness]).size).toBe(2);
+  });
+});
+
+// Two repositories independently reduce an id to the spine's join key: traceIdOf() here,
+// correlationKey() in kcp-harness (public since 0.10.4). They must agree, or the chain
+// splits in exactly the way this whole effort exists to prevent — and it splits silently,
+// because each side is individually self-consistent.
+describe("the two implementations of the join key agree", () => {
+  const cases = [
+    TRACEPARENT,
+    TRACEPARENT.toUpperCase(),
+    TRACE_ID,
+    "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+  ];
+
+  for (const value of cases) {
+    it(`agrees on ${value.slice(0, 24)}…`, () => {
+      expect(traceIdOf(value)).toBe(correlationKey(value.toLowerCase()));
+    });
+  }
+
+  // Where they deliberately differ, and why: correlationKey passes an unrecognised id
+  // through, because the harness stores randomUUID()-minted ids verbatim and reducing them
+  // would lose the chain. traceIdOf returns undefined, because a join key it cannot vouch
+  // for would merge unrelated tasks. Both are right for their own job; the point is that
+  // neither silently produces a *different* trace-id for the same input.
+  it("differ only on ids that are not traceparents, and never disagree on one that is", () => {
+    expect(correlationKey("some-uuid-style-id")).toBe("some-uuid-style-id");
+    expect(traceIdOf("some-uuid-style-id")).toBeUndefined();
+
+    const key = traceIdOf(TRACEPARENT);
+    expect(key).toBeDefined();
+    expect(correlationKey(TRACEPARENT)).toBe(key!);
   });
 });
