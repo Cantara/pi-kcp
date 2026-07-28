@@ -1,6 +1,6 @@
 {
   "name": "@cantara/pi-kcp",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Open-source KCP ergonomics for the Pi coding-agent harness",
   "type": "module",
   "license": "Apache-2.0",
