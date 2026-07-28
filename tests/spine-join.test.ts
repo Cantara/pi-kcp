@@ -105,6 +105,6 @@ describe("the two implementations of the join key agree", () => {
 
     const key = traceIdOf(TRACEPARENT);
     expect(key).toBeDefined();
-    expect(correlationKey(TRACEPARENT)).toBe(key);
+    expect(correlationKey(TRACEPARENT)).toBe(key!);
   });
 });
