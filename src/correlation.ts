@@ -48,6 +48,38 @@ export function mintTraceparent(turnIndex?: number): TurnContext {
   };
 }
 
+const TRACE_ID_RE = /^[0-9a-f]{32}$/i;
+const ZERO_TRACE_ID = "0".repeat(32);
+
+/**
+ * The join key for the evidence spine (#29): the 32-hex trace-id, from whatever form a
+ * component happened to record.
+ *
+ * The stages do not agree on what they store. pi-kcp and kcp-agent record the full W3C
+ * traceparent (`00-<trace>-<span>-01`); kcp-harness records the trace-id alone, because its
+ * `deriveCorrelation` maps trace-id → correlationId. Joining on the recorded value finds
+ * nothing.
+ *
+ * The trace-id is the only stable key, and that is the standard's design rather than a
+ * preference: W3C Trace Context defines trace-id as identifying the trace and span-id as
+ * identifying the individual operation, so the traceparent string necessarily changes per
+ * hop. `childContext` below demonstrates it — same task, same trace, different
+ * correlationId.
+ *
+ * Returns undefined rather than guessing when the input cannot be read. A wrong key silently
+ * merges unrelated tasks into one "chain", which is worse than an absent key: an audit with
+ * a hole is visibly incomplete, while an audit with the wrong contents is not.
+ */
+export function traceIdOf(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const candidate = isTraceparent(value) ? value.split("-")[1] : value;
+  if (!TRACE_ID_RE.test(candidate)) return undefined;
+  const normalised = candidate.toLowerCase();
+  // The all-zero trace-id is invalid per W3C Trace Context; joining on it would merge
+  // every task that carried an unset header.
+  return normalised === ZERO_TRACE_ID ? undefined : normalised;
+}
+
 /** Derive a child TurnContext sharing the trace-id but with a fresh span-id. */
 export function childContext(parent: TurnContext): TurnContext {
   const spanId = mintSpanId();
