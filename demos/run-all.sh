@@ -38,6 +38,7 @@ demos=(
   "12-shopping-agent-x402/run.mjs"
   "13-runaway-spender/run.mjs"
   "14-signed-receipts/run.mjs"
+  "15-governed-composition/run.mjs"
 )
 
 fails=0

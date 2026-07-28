@@ -93,6 +93,7 @@ node 11-budgeted-researcher/run.mjs
 node 12-shopping-agent-x402/run.mjs
 node 13-runaway-spender/run.mjs
 node 14-signed-receipts/run.mjs
+node 15-governed-composition/run.mjs
 ```
 
 Each script prints the real governed output and a green/red verdict block, and
@@ -128,6 +129,7 @@ exits `0` only if every check passed.
 | 12 | [The Shopping Agent (x402)](12-shopping-agent-x402/DEMO.md) | pi-kcp's real `GovernedLoop.pay` + **purchase-conformance** (spend-aware `checkConformance`) — a real 402→govern→sign→retry→settle handshake; an in-scope buy clears the spend envelope, the wallet authorizes, a **signed `purchase_settled` receipt** is emitted | no |
 | 13 | [The Runaway Spender, Contained](13-runaway-spender/DEMO.md) | **purchase-conformance** BLOCK — a buy over `max_spend` and a buy to a disallowed vendor are **held in-loop** with the reason, each opens a real **approval ticket**, and the **wallet is never authorized** (the commerce twin of demo 5) | no |
 | 14 | [Signed Receipts / Provable Spend](14-signed-receipts/DEMO.md) | **signed receipts** — settled buys produce ed25519 receipts; `verifyPurchaseReceipt` accepts a genuine one and **rejects a tampered** one; each purchase reconstructs as a **decision chain**; a **compliance report** is exported | no |
+| 15 | [The Governed Composition](15-governed-composition/DEMO.md) | **`kind: playbook` (§4.3b)** — a promotion spanning `observe → prepare → commit`; an **ungranted playbook fails closed** exactly as an ungranted skill does; a superseded one is dropped by supersession; **no step exceeds the playbook ceiling** | no |
 
 ## Layout
 
@@ -151,7 +153,8 @@ demos/
 ├── 11-budgeted-researcher/       ← DEMO.md · run.mjs · fixtures/knowledge.yaml
 ├── 12-shopping-agent-x402/       ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, buy-insight/SKILL.md}
 ├── 13-runaway-spender/           ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, buy-insight/SKILL.md}
-└── 14-signed-receipts/           ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, buy-insight/SKILL.md}
+├── 14-signed-receipts/           ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, buy-insight/SKILL.md}
+└── 15-governed-composition/      ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, skills/, playbooks/}
 ```
 
 > The commerce demos (12–14) transpile pi-kcp's real wallet + governed-loop seam

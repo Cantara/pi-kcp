@@ -4,7 +4,7 @@
 # declares `temporal.superseded_by` pointing at the March-2026 unit. The KCP
 # planner's supersession gate (gate #5 of the 13-gate cascade) must skip the
 # stale unit — WITH a written reason — and select only the active successor.
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-policy
 version: 1.0.0
 updated: "2026-07-01"

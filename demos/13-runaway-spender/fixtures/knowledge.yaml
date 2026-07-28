@@ -5,7 +5,7 @@
 # authorized to touch ("sketchy-exfil-co"). The purchase-conformance gate holds
 # both IN-LOOP with the arithmetic/allowlist reason — before the wallet is asked
 # to authorize anything. The commerce twin of demo 05's out-of-scope containment.
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-procurement
 version: 1.0.0
 updated: "2026-07-01"

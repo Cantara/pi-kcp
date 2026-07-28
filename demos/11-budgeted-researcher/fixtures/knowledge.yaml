@@ -8,7 +8,7 @@
 # Prices are whole-USDC for readability; the gate arithmetic is identical at any
 # scale. `payment.methods:[{type:x402, price_per_request, currency}]` is the real
 # KCP unit-payment schema the planner reads.
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-market-research
 version: 1.0.0
 updated: "2026-07-01"

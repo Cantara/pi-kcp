@@ -5,7 +5,7 @@
 # agent takes below lands inside this scope, so the governor approves each one
 # and the conformance gate holds NONE. Governance as an enabler: a bounded
 # autonomous agent runs freely inside its declared box.
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-research
 version: 1.0.0
 updated: "2026-07-01"

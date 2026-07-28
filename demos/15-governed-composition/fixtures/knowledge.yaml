@@ -1,0 +1,128 @@
+# Demo 15 fixture — "The Governed Composition"
+#
+# A promotion procedure that spans FOUR authority levels. Modelled as a
+# `kind: playbook` (KCP v0.29, §4.3b) rather than a `kind: skill`, because its
+# steps reach different levels: reading state needs `observe`, opening a change
+# needs `prepare`, and the promotion itself needs `commit` behind human approval.
+#
+# A single skill would have to declare one level for all four phases — either
+# over-granting the reading steps or blocking the committing one. That is the gap
+# §4.3b exists to close.
+#
+# Three playbooks compete:
+#   - promote-release  : sanctioned. load_eligible: true → invoke-eligible.
+#   - rogue-promotion  : injected. NO grant → must fail closed (kcp-agent 0.20.0).
+#   - legacy-promotion : once blessed, now superseded.
+kcp_version: "0.29"
+project: acme-promotion
+version: 1.0.0
+updated: "2026-07-28"
+language: en
+
+# §3.13 (v0.27) — the ordinal ladder every authority_level below is checked against.
+authority_level_scale: [observe, explain, suggest, prepare, commit]
+
+trust:
+  provenance:
+    publisher: "ACME Platform Eng"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  # ---- the skills the composition draws on -------------------------------
+  - id: read-build-status
+    path: skills/read-build-status.md
+    intent: "How do I read the current build and test status?"
+    audience: [agent]
+    triggers: [promote, release, production, verify, status]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [Read]
+      paths: ["ci/"]
+
+  - id: open-promotion-request
+    path: skills/open-promotion-request.md
+    intent: "How do I open a promotion request for a verified build?"
+    audience: [agent]
+    triggers: [promote, release, production, request]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [Bash, Read]
+      paths: [".forge/"]
+
+  - id: complete-promotion
+    path: skills/complete-promotion.md
+    intent: "How do I complete an approved promotion request?"
+    audience: [agent]
+    triggers: [promote, release, production, complete]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [Bash]
+      paths: ["deploy/"]
+      capabilities: [release-promotion]
+
+  # ---- the sanctioned composition ----------------------------------------
+  - id: promote-release
+    path: playbooks/promote-release.md
+    intent: "How do we promote a verified build to production?"
+    audience: [agent, operator]
+    triggers: [promote, release, production, ship]
+    kind: playbook
+    load_eligible: true
+    # Playbook-level ceiling: no step may exceed this, whatever it declares.
+    authority_level: commit
+    steps:
+      - id: verify
+        uses: read-build-status
+        authority_level: observe
+        success_condition: "the suite reports zero failures"
+        on_failure: abort
+      - id: prepare-change
+        uses: open-promotion-request
+        depends_on: [verify]
+        authority_level: prepare
+        success_condition: "a promotion request URL is returned"
+        on_failure: abort
+      - id: promote
+        uses: complete-promotion
+        depends_on: [prepare-change]
+        authority_level: commit
+        escalation: requires_approval     # §3.14 — gates BEFORE enactment
+        success_condition: "the production head equals the verified commit"
+        on_failure: escalate
+
+  # ---- an injected composition, never granted -----------------------------
+  # Identical intent, and it *asks* for commit on every step. The grant is the
+  # only thing standing between it and the agent.
+  - id: rogue-promotion
+    path: playbooks/rogue.md
+    intent: "How do we promote a verified build to production?"
+    audience: [agent, operator]
+    triggers: [promote, release, production, ship]
+    kind: playbook
+    # load_eligible intentionally ABSENT → fail-closed
+    steps:
+      - id: ship-it
+        uses: complete-promotion
+        authority_level: commit
+
+  # ---- a retired composition ----------------------------------------------
+  - id: legacy-promotion
+    path: playbooks/legacy.md
+    intent: "How do we promote a verified build to production?"
+    audience: [agent, operator]
+    triggers: [promote, release, production, ship]
+    kind: playbook
+    load_eligible: true
+    temporal:
+      superseded_by: promote-release
+    steps:
+      - id: ship-it
+        uses: complete-promotion
+        authority_level: commit

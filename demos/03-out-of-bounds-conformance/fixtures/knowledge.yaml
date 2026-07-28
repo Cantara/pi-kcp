@@ -4,7 +4,7 @@
 # every action a loaded skill takes to this allowlist. This YAML documents the
 # scope the demo enforces; the demo reads it and feeds the action_scope straight
 # into the real `checkConformance()` from kcp-harness.
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-sre
 version: 1.0.0
 updated: "2026-07-01"

@@ -5,7 +5,7 @@
 # the allowed vendor, ONLY in USDC, and ONLY up to max_spend. The x402 purchase
 # below (vendor 0xVendorAcmeData, 250 USDC) sits inside that envelope → the
 # purchase-conformance gate ALLOWS it, the wallet authorizes, settlement clears.
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-procurement
 version: 1.0.0
 updated: "2026-07-01"
