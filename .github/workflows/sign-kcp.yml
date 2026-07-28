@@ -2,8 +2,16 @@ name: Sign KCP Manifest
 
 on:
   push:
-    branches: [main, master]
+    # feature/foundation is this repo's default branch. Listing only main/master meant this
+    # workflow had never run: the manifest moved to kcp_version 0.30 on the branch everything
+    # is developed on, was never re-signed, and the repo shipped a knowledge.yaml.sig that
+    # does not verify. A consumer running --require-signature was refused, with nothing in
+    # CI to say so.
+    branches: [feature/foundation, main, master]
     paths: [knowledge.yaml]
+  # Manual trigger, runnable against any ref — so a manifest bumped on a release branch can
+  # be re-signed before the release rather than only after it merges.
+  workflow_dispatch:
 
 jobs:
   sign:

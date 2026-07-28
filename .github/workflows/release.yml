@@ -12,9 +12,12 @@ on:
         description: "Release tag (e.g. v0.2.0)"
         required: true
       target:
+        # This repo's default branch is feature/foundation, not main. main is where v0.3.3
+        # was cut and has not moved since; dispatching with the old default would tag
+        # six-commit-old code as a new release.
         description: "Ref to tag"
         required: false
-        default: "main"
+        default: "feature/foundation"
 
 permissions:
   contents: write # push the tag, create the GitHub release
