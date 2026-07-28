@@ -5,7 +5,7 @@
 # - the ops/* units : documents whose paths let the governor's auto-plan APPROVE
 #   the in-scope file actions (the governor requires a manifest unit whose path
 #   overlaps the target before a governed file call may proceed).
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-deploy
 version: 1.0.0
 updated: "2026-07-01"

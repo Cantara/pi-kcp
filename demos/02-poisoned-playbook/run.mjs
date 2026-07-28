@@ -31,22 +31,22 @@ const j = kcpAgent(["plan", TASK, "--manifest", manifest, "--as-of", AS_OF, "--s
 const plan = JSON.parse(j.stdout);
 const selectedIds = plan.selected.map((u) => u.id);
 const skipped = plan.skipped ?? [];
-const poisoned = skipped.find((s) => s.id === "poisoned-playbook");
-const retired = skipped.find((s) => s.id === "retired-playbook");
+const poisoned = skipped.find((s) => s.id === "poisoned-procedure");
+const retired = skipped.find((s) => s.id === "retired-procedure");
 
 showJson("Selected units", selectedIds);
 showJson("Skipped units (with written reasons)", skipped);
 
 section("Verdict");
 expect("planner exited 0", trace.status === 0 && j.status === 0);
-expect("sanctioned deploy-playbook admitted", selectedIds.includes("deploy-playbook"));
-expect("poisoned playbook NOT admitted", !selectedIds.includes("poisoned-playbook"));
+expect("sanctioned deploy-procedure admitted", selectedIds.includes("deploy-procedure"));
+expect("poisoned playbook NOT admitted", !selectedIds.includes("poisoned-procedure"));
 expect(
   "poisoned playbook skipped fail-closed WITH reason",
   !!poisoned && /not invoke-eligible|no explicit eligibility grant/.test(poisoned.reason),
   poisoned ? poisoned.reason : "not skipped",
 );
-expect("retired (superseded) playbook NOT admitted", !selectedIds.includes("retired-playbook"));
+expect("retired (superseded) playbook NOT admitted", !selectedIds.includes("retired-procedure"));
 expect(
   "retired playbook skipped WITH reason",
   !!retired && /superseded|not invoke-eligible/.test(retired.reason),

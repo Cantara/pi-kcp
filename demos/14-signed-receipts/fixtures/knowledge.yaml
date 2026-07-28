@@ -3,7 +3,7 @@
 # buy-insight may buy from either sanctioned vendor, in USDC, up to 5000 each.
 # Two in-scope purchases settle and produce ed25519-signed purchase receipts —
 # the non-repudiable, verifiable, exportable record of provable spend.
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-procurement
 version: 1.0.0
 updated: "2026-07-01"

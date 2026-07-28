@@ -4,7 +4,7 @@
 # sentence of a synthesized answer to THESE loaded, hash-pinned units: a claim
 # that a loaded unit supports grounds (with the unit's sha256 pinned); a claim
 # no loaded unit supports is surfaced as an explicit gap.
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-sre
 version: 1.0.0
 updated: "2026-07-01"

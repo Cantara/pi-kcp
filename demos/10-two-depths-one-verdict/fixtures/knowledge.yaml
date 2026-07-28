@@ -4,7 +4,7 @@
 # SAME allowlist whether the action is caught proxy-depth (kcp-harness serve) or
 # runtime-depth (pi-kcp's HarnessConformanceChecker). Both resolve THIS scope and
 # hand it to the SAME pure checkConformance adjudicator.
-kcp_version: "0.26"
+kcp_version: "0.29"
 project: acme-deploy
 version: 1.0.0
 updated: "2026-07-01"
