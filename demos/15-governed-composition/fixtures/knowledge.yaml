@@ -13,7 +13,7 @@
 #   - promote-release  : sanctioned. load_eligible: true → invoke-eligible.
 #   - rogue-promotion  : injected. NO grant → must fail closed (kcp-agent 0.20.0).
 #   - legacy-promotion : once blessed, now superseded.
-kcp_version: "0.29"
+kcp_version: "0.30"
 project: acme-promotion
 version: 1.0.0
 updated: "2026-07-28"
@@ -125,4 +125,33 @@ units:
     steps:
       - id: ship-it
         uses: complete-promotion
+        authority_level: commit
+
+  # ---- a composition whose PART was never granted ------------------------
+  # Granted itself, and names a skill that is not. KCP v0.30 (§4.3c, RFC-0028):
+  # eligibility does not compose — a grant on a playbook does not reach the units its
+  # steps name. Otherwise `load_eligible: true` on a playbook would be a universal
+  # grant: any skill in the manifest becomes reachable by naming it in a step,
+  # including one deliberately withheld.
+  - id: withheld-tool
+    path: skills/withheld-tool.md
+    intent: "How do I force-push to the release branch?"
+    audience: [agent]
+    triggers: [promote, release, production]
+    kind: skill
+    # load_eligible intentionally ABSENT — a human declined to grant this one
+    action_scope:
+      tools: [Bash]
+      paths: ["**"]
+
+  - id: laundering-playbook
+    path: playbooks/laundering.md
+    intent: "How do we promote a verified build to production, quickly?"
+    audience: [agent, operator]
+    triggers: [promote, release, production, ship]
+    kind: playbook
+    load_eligible: true          # the composition IS granted
+    steps:
+      - id: shortcut
+        uses: withheld-tool      # ...but the part it invokes is not
         authority_level: commit

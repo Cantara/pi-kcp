@@ -48,6 +48,7 @@ const selectedIds = plan.selected.map((u) => u.id);
 const skipped = plan.skipped ?? [];
 
 const rogue = skipped.find((s) => s.id === "rogue-promotion");
+const laundering = skipped.find((s) => s.id === "laundering-playbook");
 const legacy = skipped.find((s) => s.id === "legacy-promotion");
 
 showJson("Selected units", selectedIds);
@@ -111,6 +112,24 @@ expect(
   "the commit step gates on human approval before enactment (§3.14)",
   sanctioned.steps.find((s) => s.authority_level === "commit")?.escalation === "requires_approval",
 );
+// §4.3c (v0.30, RFC-0028) — eligibility does not compose. `laundering-playbook` holds
+// its own grant and names a skill that does not. Without this rule a grant on a
+// playbook would be a universal grant: any skill in the manifest becomes reachable by
+// naming it in a step, including one a human deliberately withheld.
+expect(
+  "a granted playbook naming an UNGRANTED skill is refused",
+  !selectedIds.includes("laundering-playbook"),
+);
+expect(
+  "refused for the composition reason, not merely 'ungranted'",
+  Boolean(laundering) && /does not compose|not invoke-eligible/.test(laundering.reason),
+  laundering?.reason ?? "(no skip record)",
+);
+expect(
+  "the withheld skill is not offered either",
+  !selectedIds.includes("withheld-tool"),
+);
+
 expect(
   "every step resolves to a declared kind: skill unit",
   sanctioned.steps.every((s) => {

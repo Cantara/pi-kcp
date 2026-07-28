@@ -69,6 +69,8 @@ demo is the regression check.
 | the procedure | spans more than one level — which is why it is not a skill |
 | the `commit` step | gates on human approval **before** enactment (§3.14) |
 | every `uses` | resolves to a declared `kind: skill` unit |
+| a granted playbook naming an **ungranted** skill | **refused**, for the composition reason (§4.3c) |
+| the withheld skill | not offered either |
 
 The last four read the **manifest**, not the plan: `PlannedUnit` does not carry `steps`,
 so the manifest is the honest source. Asserting against the plan would be asserting on
@@ -86,10 +88,30 @@ cd demos
 node 15-governed-composition/run.mjs
 ```
 
-## Open question this demo deliberately does not answer
+## Eligibility does not compose (§4.3c, v0.30)
 
-A **granted** playbook whose steps `uses` an **ungranted** skill is currently admitted —
-the planner offers the composition while withholding the part. Whether that is a refusal
-or a degraded offer is unresolved ([kcp-agent#118](https://github.com/Cantara/kcp-agent/issues/118),
-item 3). Every skill in this fixture carries a grant, so the demo shows the settled
-behaviour rather than picking a side on the open one.
+The fourth composition, `laundering-playbook`, holds its **own** grant and names a skill
+that does not:
+
+```yaml
+  - id: withheld-tool
+    kind: skill
+    # load_eligible intentionally ABSENT — a human declined to grant this one
+    action_scope: { tools: [Bash], paths: ["**"] }
+
+  - id: laundering-playbook
+    kind: playbook
+    load_eligible: true        # the composition IS granted
+    steps:
+      - id: shortcut
+        uses: withheld-tool    # ...but the part it invokes is not
+```
+
+Without the rule, `load_eligible: true` on a playbook would be a **universal grant** —
+any skill in the manifest becomes reachable by naming it in a step, including one a human
+deliberately withheld. The planner refuses it, and says so by name.
+
+When this demo was written the question was open ([kcp-agent#118](https://github.com/Cantara/kcp-agent/issues/118)
+item 3) and the fixture granted everything to avoid picking a side. RFC-0028 settled it —
+a grant on a composition does not reach the parts — and KCP v0.30 plus
+[kcp-agent 0.21.0](https://github.com/Cantara/kcp-agent/pull/124) implement it.
