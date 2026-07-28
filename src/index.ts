@@ -44,7 +44,7 @@ export type {
   PaymentGovernFn,
   PaymentGovernanceDecision,
 } from "./wallet.js";
-export { childContext, isTraceparent, mintTraceparent } from "./correlation.js";
+export { childContext, isTraceparent, mintTraceparent, traceIdOf } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
 export {
   detectAgentSkillLoad,
