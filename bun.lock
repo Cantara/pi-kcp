@@ -6,7 +6,7 @@
       "name": "@cantara/pi-kcp",
       "dependencies": {
         "js-yaml": "^4.1.0",
-        "kcp-harness": "^0.10.4",
+        "kcp-harness": "^0.11.0",
       },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "^0.80.6",
@@ -230,7 +230,7 @@
 
     "kcp-agent": ["kcp-agent@0.22.1", "", { "dependencies": { "js-yaml": "^4.1.0" }, "optionalDependencies": { "@anthropic-ai/sdk": "^0.68.0" }, "bin": { "kcp-agent": "dist/cli.js" } }, "sha512-cavFZaxH1hDQbmUQbui6nRm1l/RhPQXlGkSYV7jaUPUTtFL90lxIo4sPrnXTHvxlLTSljzmhikoZJct+4rU1Hw=="],
 
-    "kcp-harness": ["kcp-harness@0.10.4", "", { "dependencies": { "js-yaml": "^4.1.0", "kcp-agent": "^0.22.0" }, "bin": { "kcp-harness": "dist/cli.js" } }, "sha512-IQa6j5c7UGzfzE2TMIOKaE88tlM84HKsnEoZEX3NZgQqCVadQwfUzWf0xobTMT10fph6U3SbVaaFzwhigDNzNQ=="],
+    "kcp-harness": ["kcp-harness@0.11.0", "", { "dependencies": { "js-yaml": "^4.1.0", "kcp-agent": "^0.22.0" }, "bin": { "kcp-harness": "dist/cli.js" } }, "sha512-5ORk0vcXFMNczOSRB8S5tcyUK6iOwEc7mIMgYW8qDz65OQeZObGaAPuzu11Zb/Oe9efXBYgJd/6DHsQuzMSOfA=="],
 
     "long": ["long@5.3.2", "", {}, "sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBPKjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA=="],
 

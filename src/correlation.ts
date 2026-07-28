@@ -72,9 +72,15 @@ const ZERO_TRACE_ID = "0".repeat(32);
  */
 export function traceIdOf(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
-  const candidate = isTraceparent(value) ? value.split("-")[1] : value;
+  // Lower-case before matching. W3C writes traceparent in lower-case hex, and isTraceparent
+  // enforces that as a validator should — but kcp-harness's parseTraceparent lower-cases
+  // first, so an upper-case header it correlates would be dropped here. Two components
+  // disagreeing about whether a header is a traceparent splits the chain exactly the way the
+  // join key exists to prevent, and each side looks self-consistent while it happens.
+  const lowered = value.trim().toLowerCase();
+  const candidate = isTraceparent(lowered) ? lowered.split("-")[1] : lowered;
   if (!TRACE_ID_RE.test(candidate)) return undefined;
-  const normalised = candidate.toLowerCase();
+  const normalised = candidate;
   // The all-zero trace-id is invalid per W3C Trace Context; joining on it would merge
   // every task that carried an unset header.
   return normalised === ZERO_TRACE_ID ? undefined : normalised;
