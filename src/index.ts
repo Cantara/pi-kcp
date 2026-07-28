@@ -5,6 +5,7 @@ import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-a
 import { GovernedLoop } from "./governed-loop.js";
 import { type ConformanceChecker } from "./conformance.js";
 import { HarnessConformanceChecker } from "./harness-conformance.js";
+import { supportsFlag } from "./agent-capability.js";
 import { MockPaymentExecutor, MockWallet, type PaymentExecutor, type WalletProvider } from "./wallet.js";
 
 export { PassThroughChecker, passThroughChecker } from "./conformance.js";
@@ -378,17 +379,37 @@ function agentNotFoundMessage(config: KcpConfig): string {
   return `kcp-agent CLI was not found.${configured} Set agentCli in .pi/kcp.json, set KCP_AGENT_CLI, or install the kcp-agent executable.`;
 }
 
-async function runKcpAgent(pi: ExtensionAPI, cwd: string, args: string[], config: KcpConfig): Promise<string> {
+async function runKcpAgent(
+  pi: ExtensionAPI,
+  cwd: string,
+  args: string[],
+  config: KcpConfig,
+  correlationId?: string,
+): Promise<string> {
   const invocation = await findAgentInvocation(pi, config);
   if (!invocation) throw new Error(agentNotFoundMessage(config));
 
-  // No correlation id on the CLI: no released kcp-agent accepts --correlation-id,
-  // and its parser fail-closes on unknown options (pi-kcp#36). The turn's id still
-  // reaches kcp-memory (?traceparent=) and the published messages. Re-enable behind
-  // a capability probe once kcp-agent ships the flag (kcp-agent#114).
+  // The turn's correlation id goes to the agent only if the installed agent documents the
+  // flag. kcp-agent's parser fail-closes on unknown options, so passing it blind killed the
+  // whole turn against every agent before 0.22.0 (pi-kcp#36). The probe reads that binary's
+  // own help rather than comparing versions, and fails closed: an agent we cannot ask is an
+  // agent we do not pass the flag to.
+  const extra: string[] = [];
+  if (correlationId) {
+    const supported = await supportsFlag(
+      // `plan --help`, not a bare `--help`: the bare form prints only the usage summary,
+      // while the option reference — where --correlation-id is listed — comes from the
+      // subcommand form. Probing the wrong one reports "unsupported" forever.
+      () => pi.exec(invocation.command, [...invocation.args, "plan", "--help"], { timeout: 10_000 }),
+      "--correlation-id",
+      `${invocation.command} ${invocation.args.join(" ")}`,
+    );
+    if (supported) extra.push("--correlation-id", correlationId);
+  }
+
   const result = await pi.exec(
     invocation.command,
-    [...invocation.args, ...args],
+    [...invocation.args, ...args, ...extra],
     { timeout: 15_000 },
   );
   if (result.code !== 0) {
@@ -406,8 +427,20 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function runPlan(pi: ExtensionAPI, cwd: string, intent: string, config: KcpConfig): Promise<string> {
-  const output = await runKcpAgent(pi, cwd, ["plan", intent, "--manifest", resolve(cwd, config.manifest), "--json"], config);
+async function runPlan(
+  pi: ExtensionAPI,
+  cwd: string,
+  intent: string,
+  config: KcpConfig,
+  correlationId?: string,
+): Promise<string> {
+  const output = await runKcpAgent(
+    pi,
+    cwd,
+    ["plan", intent, "--manifest", resolve(cwd, config.manifest), "--json"],
+    config,
+    correlationId,
+  );
   return normalizePlanJson(output);
 }
 
@@ -523,7 +556,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
         }
         try {
           const correlationId = loop.currentCorrelationId();
-          const plan = await runPlan(pi, ctx.cwd, intent, config);
+          const plan = await runPlan(pi, ctx.cwd, intent, config, correlationId);
           publish(pi, "KCP plan", plan, correlationId);
           show(ctx, "Added the kcp-agent load plan to the next turn.");
         } catch (error) {
@@ -603,3 +636,5 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     return undefined;
   });
 }
+
+export { helpMentionsFlag, supportsFlag, resetCapabilityCache } from "./agent-capability.js";
