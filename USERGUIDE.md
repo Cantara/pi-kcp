@@ -15,9 +15,9 @@ This guide is task-oriented. Copy-paste the commands and YAML and adjust paths.
 - **Pi** (`@earendil-works/pi-coding-agent`, `>= 0.80.6`) and **Node `>= 20`** (Bun
   for local dev).
 - The KCP tools this extension talks to, as needed:
-  - **kcp-agent** CLI (`0.16.0`) — for `/kcp plan`, `/kcp validate`, `/kcp init`.
-  - **kcp-memory** HTTP daemon (`0.33.0`) — for episodic recall.
-  - **kcp-harness** (`0.10.1`) — a dependency; provides the conformance decision
+  - **kcp-agent** CLI (`0.22.1`) — for `/kcp plan`, `/kcp validate`, `/kcp init`.
+  - **kcp-memory** HTTP daemon (`0.34.0`) — for episodic recall.
+  - **kcp-harness** (`0.11.0`) — a dependency; provides the conformance decision
     function and the compliance export/audit tooling.
 - A project **`knowledge.yaml`** manifest (create one with `/kcp init`).
 

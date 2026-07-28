@@ -4,11 +4,11 @@ A suite of small, self-contained, **end-to-end-tested** demos that test-drive
 the KCP defendable-agent stack using the **real published tools** — no mocks for
 the governance:
 
-- **`kcp-agent@0.17.0`** — the deterministic 13-gate knowledge planner (CLI) +
+- **`kcp-agent@0.22.1`** — the deterministic 13-gate knowledge planner (CLI) +
   the grounding / confidence / **money_budget** gates.
-- **`kcp-harness@0.9.0`** — the MCP compliance proxy + conformance / **purchase**
+- **`kcp-harness@0.11.0`** — the MCP compliance proxy + conformance / **purchase**
   / audit / export library (purchase-aware conformance + signed receipts, #139).
-- **`kcp-memory@0.33.0`** — the episodic-memory daemon (Java) with the recall
+- **`kcp-memory@0.34.0`** — the episodic-memory daemon (Java) with the recall
   gate (demo 8 only).
 - **pi-kcp's own runtime seam** — the wallet + governed loop under
   `../src` (`GovernedLoop.pay`, `MockPaymentExecutor`, signed receipts),
@@ -55,7 +55,7 @@ Batch 3:
 
 ```bash
 cd demos
-npm install          # installs kcp-agent@0.17.0, kcp-harness@0.9.0, js-yaml
+npm install          # installs kcp-agent@0.22.1, kcp-harness@0.11.0, js-yaml
 ```
 
 Optional, per demo:
