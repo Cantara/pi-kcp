@@ -49,7 +49,7 @@ pi -e ./src/index.ts
 /kcp plan <intent>        Add a deterministic knowledge plan to the next turn
 /kcp validate             Validate the project's knowledge.yaml
 /kcp init                 Create knowledge.yaml (won't overwrite an existing file)
-/kcp govern <on|off|status>  Turn the governed cycle on or off for this session
+/kcp govern <full|tool|off|status>  Set how much of the governed cycle runs
 /kcp evidence [n]         Show the stage record for the last n governed turns
 ```
 
@@ -179,7 +179,7 @@ automatic behavior and is reported by `/kcp health`.
   "timeoutMs": 400,
   "manifest": "knowledge.yaml",
   "requireActiveSkill": false,
-  "governedLoop": false,
+  "governance": "tool",
   "gateFailurePosture": "announce",
   "agentCli": "/path/to/kcp-agent/dist/cli.js"
 }
@@ -193,11 +193,20 @@ automatic behavior and is reported by `/kcp health`.
   calls taken with **no active skill** are fail-closed instead of passing through to
   the other gates. Use it for high-assurance autonomous agents that should only ever
   act within a declared skill's `action_scope`.
-- `governedLoop` — run the full governed cycle (default `false`). When `true`, pi-kcp
-  sequences all seven stages across Pi's lifecycle and records a decision for each, so
-  a turn that skipped the gate is reported rather than passing silently. See
-  [The governed cycle](#the-governed-cycle) below. Opt-in for now: it puts pi-kcp on
-  the critical path of every turn.
+- `governance` — how much of the governed cycle runs (default `"tool"`).
+
+  | Mode | What runs | Cost |
+  |---|---|---|
+  | `"full"` | all seven stages, including the per-turn planner trace that gates skill selection | one `kcp-agent` invocation per turn (~57ms); **requires kcp-agent** |
+  | `"tool"` | the governance boundary: conformance at `tool_call`, integrity at `tool_result` | no subprocess, no kcp-agent dependency |
+  | `"off"` | no cycle, no records | — |
+
+  `"off"` is not "no enforcement": conformance at `tool_call` predates the cycle and
+  still runs in every mode. `"off"` means pi-kcp keeps no turn record and makes no
+  liveness claim.
+
+  A turn is judged against what its mode promised. `"tool"` mode is never reported as
+  ungoverned for stages it never claimed to run.
 - `gateFailurePosture` — what the runtime does when **its own gate breaks**, i.e. a
   stage errored and it can no longer establish what is authorized.
   - `"announce"` (default) — report the lapse prominently and keep the host usable.
@@ -206,20 +215,21 @@ automatic behavior and is reported by `/kcp health`.
 - `agentCli` — explicit kcp-agent CLI path or command. Discovery also checks
   `KCP_AGENT_CLI`, known Homebrew/npm install locations, and `kcp-agent` on `PATH`.
 
-### Turning it off
+### Changing mode mid-session
 
-`/kcp govern off` disables the cycle for the session without editing `.pi/kcp.json`;
-`/kcp govern on` restores it, and `/kcp govern status` reports which is in force and
-where it came from.
+`/kcp govern <full|tool|off>` changes the mode for the session without editing
+`.pi/kcp.json`; `/kcp govern status` reports which mode is in force and where it came
+from.
 
-Turning governance off is itself announced in the session. Disabling a guarantee is a
+**Lowering** the mode is announced in the session — weakening a guarantee is a
 governance decision, so it leaves the same trace a lapse does rather than happening
-quietly.
+quietly. Raising it is not announced; strengthening needs no alibi.
 
 ### The governed cycle
 
-With `governedLoop: true`, the seven stages run as one sequence over eight of Pi's
-lifecycle events, each recording a decision against the turn's correlation id:
+With `governance: "full"`, the seven stages run as one sequence over eight of Pi's
+lifecycle events, each recording a decision against the turn's correlation id. With
+`"tool"`, only the two tool-boundary stages run — and the turn is judged on those alone.
 
 | Stage | Pi event | What it records |
 |---|---|---|
@@ -231,12 +241,17 @@ lifecycle events, each recording a decision against the turn's correlation id:
 | ground | `agent_end` | the output available to check |
 | assess | `turn_end` | the turn's tool results |
 
+`approve` and `act` are **conditional**: a turn that answered without using a tool never
+reaches them, so they are closed out as `skipped` with a reason rather than counted
+missing. Ordinary question-and-answer turns are governed turns, and the liveness warning
+stays meaningful because it never fires on them.
+
 At `turn_end` the record is emitted via the `onTurnRecorded` hook. If any stage's gate
 broke, or any stage never reported at all, `onUngoverned` fires with the reason.
 
 ### Skills are gated before they shape a turn
 
-When the governed cycle is on, the plan stage runs `kcp-agent plan --trace --json`, which
+*(`governance: "full"` only.)* The plan stage runs `kcp-agent plan --trace --json`, which
 adjudicates every declared unit against the planner's 14 gates. A skill whose unit failed a
 gate never becomes active:
 

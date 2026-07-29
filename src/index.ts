@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { type GovernanceDecision, GovernedLoop } from "./governed-loop.js";
-import { type GateFailurePosture, type TurnRecord, ungovernedReason } from "./runtime.js";
+import { missingStages, type GateFailurePosture, type GovernanceMode, TOOL_STAGES, type TurnRecord, ungovernedReason } from "./runtime.js";
 import { digest } from "./evidence.js";
 import { parseTrace } from "./skill-gate.js";
 import type { SkillSelected } from "./skill-detection.js";
@@ -48,12 +48,12 @@ export type {
   PaymentGovernFn,
   PaymentGovernanceDecision,
 } from "./wallet.js";
-export { ALL_STAGES, isGoverned, missingStages, erroredStages, violatedStages, ungovernedReason } from "./runtime.js";
+export { ALL_STAGES, TOOL_STAGES, expectedStagesFor, isGoverned, missingStages, erroredStages, violatedStages, ungovernedReason } from "./runtime.js";
 export { TURN_HISTORY_LIMIT } from "./governed-loop.js";
 export { canonicalJson, digest } from "./evidence.js";
 export { admitSkill, findTracedUnit, parseTrace } from "./skill-gate.js";
 export type { GateVerdict, SkillAdmission, TracedUnit } from "./skill-gate.js";
-export type { GateFailurePosture, Stage, StageDecision, StageStatus, TurnRecord } from "./runtime.js";
+export type { GateFailurePosture, GovernanceMode, Stage, StageDecision, StageStatus, TurnRecord } from "./runtime.js";
 export { childContext, isTraceparent, mintTraceparent, traceIdOf } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
 export {
@@ -106,6 +106,9 @@ const DEFAULT_MAX_RESULTS = 3;
 const MAX_CONTEXT_BYTES = 12_000;
 const CONFIG_FILE = ".pi/kcp.json";
 
+/** Strength ordering, so a session override can tell weakening from strengthening. */
+const RANK: Record<GovernanceMode, number> = { off: 0, tool: 1, full: 2 };
+
 export interface KcpConfig {
   enabled: boolean;
   autoRecall: boolean;
@@ -120,12 +123,17 @@ export interface KcpConfig {
    */
   requireActiveSkill: boolean;
   /**
-   * Run the full governed cycle (#27) rather than the individual entry points — sequencing
-   * plan → load → synthesize → ground → assess → approve → act across Pi's lifecycle and
-   * recording a decision per stage. Opt-in while the runtime posture (#26 Phase 2) lands,
-   * because it puts pi-kcp on the critical path of every turn.
+   * How much of the governed cycle runs (#27).
+   *
+   * - `"tool"` (default) — the governance boundary: conformance at `tool_call`, integrity
+   *   at `tool_result`, both recorded and asserted. No planner invocation and no
+   *   dependency on kcp-agent being installed.
+   * - `"full"` — all seven stages, including the per-turn planner trace that gates skill
+   *   selection (#28). Requires kcp-agent.
+   * - `"off"` — no cycle and no records. Conformance at `tool_call` still runs; it
+   *   predates the cycle, and "no cycle" does not mean "no enforcement".
    */
-  governedLoop: boolean;
+  governance: GovernanceMode;
   /**
    * What the runtime does when its own gate breaks — a stage errored, so it can no longer
    * establish what is authorized.
@@ -195,7 +203,7 @@ export const KCP_HELP = `pi-kcp — KCP agent proficiency and ergonomics
 /kcp plan <intent>        Add a deterministic knowledge plan to the next turn
 /kcp validate             Validate the project's knowledge.yaml
 /kcp init                 Create knowledge.yaml without overwriting an existing file
-/kcp govern <on|off|status>  Turn the governed cycle on or off for this session
+/kcp govern <full|tool|off|status>  Set how much of the governed cycle runs
 /kcp evidence [n]         Show the stage record for the last n governed turns`;
 
 const RECALL_SIGNALS = [
@@ -216,7 +224,7 @@ export const defaultConfig: KcpConfig = {
   timeoutMs: DEFAULT_TIMEOUT_MS,
   manifest: "knowledge.yaml",
   requireActiveSkill: false,
-  governedLoop: false,
+  governance: "tool",
   gateFailurePosture: "announce",
 };
 
@@ -308,7 +316,14 @@ export function parseConfig(value: unknown): LoadedConfig {
   }
   if (value.manifest !== undefined && (typeof value.manifest !== "string" || value.manifest.trim() === "")) errors.push("manifest must be a non-empty string");
   if (value.requireActiveSkill !== undefined && typeof value.requireActiveSkill !== "boolean") errors.push("requireActiveSkill must be a boolean");
-  if (value.governedLoop !== undefined && typeof value.governedLoop !== "boolean") errors.push("governedLoop must be a boolean");
+  if (
+    value.governance !== undefined &&
+    value.governance !== "full" &&
+    value.governance !== "tool" &&
+    value.governance !== "off"
+  ) {
+    errors.push('governance must be "full", "tool" or "off"');
+  }
   if (value.gateFailurePosture !== undefined && value.gateFailurePosture !== "announce" && value.gateFailurePosture !== "block") {
     errors.push('gateFailurePosture must be "announce" or "block"');
   }
@@ -745,31 +760,37 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
 
       if (subcommand === "govern") {
         const arg = (rest[0] ?? "").toLowerCase();
-        const configured = config.enabled && config.governedLoop;
+        const configured: GovernanceMode = config.enabled ? config.governance : "off";
 
         if (arg === "status" || arg === "") {
           const effective = governOverride ?? configured;
           const via = governOverride === undefined ? "from .pi/kcp.json" : "session override";
           show(
             ctx,
-            `pi-kcp governance: ${effective ? "on" : "off"} (${via})\n` +
-              `configured: ${configured ? "on" : "off"} · gate-failure posture: ${config.gateFailurePosture}`,
+            `pi-kcp governance: ${effective} (${via})\n` +
+              `configured: ${configured} · gate-failure posture: ${config.gateFailurePosture}\n` +
+              `  full — all seven stages, gates skills through the planner (needs kcp-agent)\n` +
+              `  tool — conformance and integrity at the tool boundary\n` +
+              `  off  — no cycle (tool_call conformance still runs)`,
           );
           return;
         }
 
-        if (arg === "on" || arg === "off") {
-          governOverride = arg === "on";
+        if (arg === "full" || arg === "tool" || arg === "off") {
+          governOverride = arg;
           show(ctx, `pi-kcp governance: ${arg} (session override; .pi/kcp.json unchanged)`);
-          // Disabling the guarantee is itself a governance event — it gets the same
-          // visibility as a turn that lapsed, so it cannot be done quietly.
-          if (arg === "off") {
+          // Weakening the guarantee is itself a governance decision, so it leaves the same
+          // trace a lapse does rather than happening quietly. Strengthening it need not.
+          if (RANK[arg] < RANK[configured]) {
             pi.sendMessage(
               {
                 customType: "pi-kcp",
                 content:
-                  "## KCP — governance turned **off**\n\nThe governed cycle is disabled for this session. " +
-                  "Tool calls are no longer covered by the governance guarantee. Re-enable with `/kcp govern on`.",
+                  `## KCP — governance lowered to **${arg}**\n\nConfigured mode is \`${configured}\`. ` +
+                  (arg === "off"
+                    ? "The cycle is disabled for this session; tool calls are no longer covered by the governance guarantee."
+                    : "The full cycle is no longer running; the tool boundary still is.") +
+                  "\n\nRestore with `/kcp govern " + configured + "`.",
                 display: true,
               },
               { deliverAs: "nextTurn" },
@@ -778,7 +799,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
           return;
         }
 
-        show(ctx, `Usage: /kcp govern <on|off|status>`, "warning");
+        show(ctx, `Usage: /kcp govern <full|tool|off|status>`, "warning");
         return;
       }
 
@@ -801,9 +822,9 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // Whether the governed cycle is running for the turn now in progress. Decided once, at
   // the turn boundary: a turn is governed under one configuration, not one that can change
   // under it mid-flight — and it keeps the cycle off the disk on every lifecycle event.
-  let cycleActive = false;
+  let mode: GovernanceMode = "off";
   // Session override from `/kcp govern`; `undefined` means defer to configuration.
-  let governOverride: boolean | undefined;
+  let governOverride: GovernanceMode | undefined;
   // Decided at the same boundary, for the same reason: the posture that applies to a turn
   // is the one in force when it started.
   let posture: GateFailurePosture = "announce";
@@ -812,9 +833,9 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
 
   // Mint a fresh per-turn correlation id (#29) at the turn boundary.
   pi.on("turn_start", async (event, ctx) => {
-    loop.beginTurn(event.turnIndex);
     const { config } = await loadConfig(ctx.cwd);
-    cycleActive = governOverride ?? (config.enabled && config.governedLoop);
+    mode = governOverride ?? (config.enabled ? config.governance : "off");
+    loop.beginTurn(event.turnIndex, mode);
     posture = config.gateFailurePosture;
     turnConfig = config;
     // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
@@ -873,7 +894,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     return decision.block ? { block: true, reason: decision.reason } : undefined;
   });
 
-  registerGovernedCycle(pi, loop, () => cycleActive, () => turnConfig);
+  registerGovernedCycle(pi, loop, () => mode, () => turnConfig);
 }
 
 /**
@@ -887,13 +908,17 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
 function registerGovernedCycle(
   pi: ExtensionAPI,
   loop: GovernedLoop,
-  active: () => boolean,
+  mode: () => GovernanceMode,
   turnConfig: () => KcpConfig,
 ): void {
+  // The five non-tool stages belong to `full` only. `tool` mode is the governance
+  // boundary without the per-turn planner invocation.
+  const full = (): boolean => mode() === "full";
+  const anyCycle = (): boolean => mode() !== "off";
   // plan — the prompt is known and Pi has already assembled what it loaded, so the stage
   // can inspect that rather than re-discovering resources.
   pi.on("before_agent_start", async (event, ctx) => {
-    if (!active()) return undefined;
+    if (!full()) return undefined;
     await loop.stage("plan", async () => {
       const detail: Record<string, unknown> = {
         promptBytes: Buffer.byteLength(event.prompt, "utf8"),
@@ -933,7 +958,7 @@ function registerGovernedCycle(
   // load — the context assembly point. Phase 1 records what was assembled; injection of
   // planned units lands with the evidence-integrity work (Phase 3).
   pi.on("context", async (event) => {
-    if (!active()) return undefined;
+    if (!full()) return undefined;
     await loop.stage("load", async () => ({
       detail: { messages: event.messages.length, contextDigest: digest(event.messages) },
     }));
@@ -943,7 +968,7 @@ function registerGovernedCycle(
   // synthesize is the provider's, and ground checks what it returned. Both are known at
   // agent_end: the messages are the evidence that synthesis happened at all.
   pi.on("agent_end", async (event) => {
-    if (!active()) return undefined;
+    if (!full()) return undefined;
     await loop.stage("synthesize", async () => ({
       detail: { owner: "provider", messages: event.messages.length },
     }));
@@ -956,7 +981,7 @@ function registerGovernedCycle(
   // act — the outcome of a tool call, which the approve stage never sees. Without this the
   // loop watches actions get proposed and never learns what they did.
   pi.on("tool_result", async (event) => {
-    if (!active()) return undefined;
+    if (!anyCycle()) return undefined;
     await loop.stage("act", async () => {
       // `afterToolCall` hands back the same args object `beforeToolCall` saw, so this
       // compares what ran against what was approved rather than restating the intent.
@@ -974,10 +999,28 @@ function registerGovernedCycle(
 
   // assess closes the cycle, then the turn record is emitted and its governance asserted.
   pi.on("turn_end", async (event) => {
-    if (!active()) return undefined;
-    await loop.stage("assess", async () => ({
-      detail: { toolResults: event.toolResults.length },
-    }));
+    if (!anyCycle()) return undefined;
+    if (full()) {
+      await loop.stage("assess", async () => ({
+        detail: { toolResults: event.toolResults.length },
+      }));
+    }
+
+    // Close out the tool stages the turn never reached. `approve` absent means no tool was
+    // called at all; `act` absent with `approve` present means the call was blocked or
+    // never ran. Both are decisions, and recording them keeps the liveness warning for
+    // turns where the cycle genuinely did not run.
+    const missing = new Set(missingStages(loop.turnRecord()));
+    const approvedSomething = !missing.has("approve");
+    for (const stage of TOOL_STAGES) {
+      if (!missing.has(stage)) continue;
+      const reason =
+        stage === "act" && approvedSomething
+          ? "tool call did not execute — blocked, or the turn ended first"
+          : "no tool call this turn";
+      await loop.stage(stage, async () => ({ status: "skipped" as const, reason }));
+    }
+
     loop.finishTurn();
     return undefined;
   });

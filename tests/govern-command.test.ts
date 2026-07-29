@@ -73,19 +73,41 @@ describe("/kcp govern", () => {
     await mkdir(join(dir, ".pi"), { recursive: true });
     await writeFile(
       join(dir, ".pi", "kcp.json"),
-      JSON.stringify({ enabled: true, autoRecall: false, governedLoop: true }),
+      JSON.stringify({ enabled: true, autoRecall: false, governance: "full" }),
     );
   });
   afterAll(async () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("reports the configured state", async () => {
+  it("reports the configured mode and lists the alternatives", async () => {
     const pi = new FakePi();
     register(pi.asApi());
     await govern(pi, "govern status");
 
-    expect(notices.join("\n")).toMatch(/on/i);
+    const out = notices.join("\n");
+    expect(out).toMatch(/governance: full/);
+    expect(out).toMatch(/tool —/);
+    expect(out).toMatch(/off\s+—/);
+  });
+
+  it("tool mode keeps the boundary but drops the full cycle", async () => {
+    const pi = new FakePi();
+    register(pi.asApi());
+    await govern(pi, "govern tool");
+
+    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
+    const input = { command: "ls" };
+    await pi.fire("tool_call", { toolCallId: "t1", toolName: "bash", input }, dir);
+    await pi.fire(
+      "tool_result",
+      { toolCallId: "t1", toolName: "bash", input, content: [], isError: false },
+      dir,
+    );
+    await pi.fire("turn_end", { turnIndex: 1, message: {}, toolResults: [] }, dir);
+
+    // The tool stages ran and the turn is judged only on them.
+    expect(ungovernedCount(pi)).toBe(0);
   });
 
   it("off stops the cycle running, and says so", async () => {
@@ -113,7 +135,7 @@ describe("/kcp govern", () => {
     expect(announced!.content).toMatch(/off|disabled/i);
   });
 
-  it("on restores the cycle after an off", async () => {
+  it("full restores the cycle after an off", async () => {
     const pi = new FakePi();
     register(pi.asApi());
 
@@ -121,9 +143,21 @@ describe("/kcp govern", () => {
     await emptyTurn(pi, 1);
     expect(ungovernedCount(pi)).toBe(0);
 
-    await govern(pi, "govern on");
+    await govern(pi, "govern full");
     await emptyTurn(pi, 2);
     expect(ungovernedCount(pi)).toBe(1);
+  });
+
+  it("announces a lowered mode, but not a raised one", async () => {
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    await govern(pi, "govern tool");
+    expect(pi.sent.filter((m) => (m.content ?? "").includes("lowered"))).toHaveLength(1);
+
+    const before = pi.sent.length;
+    await govern(pi, "govern full");
+    expect(pi.sent.length).toBe(before);
   });
 
   it("rejects an unknown argument without changing state", async () => {
@@ -131,7 +165,7 @@ describe("/kcp govern", () => {
     register(pi.asApi());
     await govern(pi, "govern sideways");
 
-    expect(notices.join("\n")).toMatch(/on\|off\|status/);
+    expect(notices.join("\n")).toMatch(/full\|tool\|off\|status/);
     await emptyTurn(pi, 1);
     expect(ungovernedCount(pi)).toBe(1);
   });

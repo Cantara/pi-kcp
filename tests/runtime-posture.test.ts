@@ -69,7 +69,7 @@ async function cutShortTurn(pi: FakePi, cwd: string): Promise<void> {
 describe("an ungoverned turn reaches the user by default", () => {
   let dir = "";
   beforeAll(async () => {
-    dir = await fixture({ enabled: true, governedLoop: true });
+    dir = await fixture({ enabled: true, governance: "full" });
   });
   afterAll(async () => {
     await rm(dir, { recursive: true, force: true });
@@ -109,7 +109,7 @@ describe("an ungoverned turn reaches the user by default", () => {
   });
 
   it("stays quiet when the governed cycle is off", async () => {
-    const off = await fixture({ enabled: true, governedLoop: false });
+    const off = await fixture({ enabled: true, governance: "off" });
     const pi = new FakePi();
     register(pi.asApi());
     await cutShortTurn(pi, off);
@@ -151,7 +151,7 @@ describe("gate-failure posture", () => {
   it("announce: a broken gate does not block the tool call", async () => {
     const dir = await fixture({
       enabled: true,
-      governedLoop: true,
+      governance: "full",
       gateFailurePosture: "announce",
     });
     const pi = new FakePi();
@@ -169,7 +169,7 @@ describe("gate-failure posture", () => {
   it("block: a broken gate refuses subsequent tool calls, with a reason", async () => {
     const dir = await fixture({
       enabled: true,
-      governedLoop: true,
+      governance: "full",
       gateFailurePosture: "block",
     });
     const pi = new FakePi();
@@ -189,7 +189,7 @@ describe("gate-failure posture", () => {
   it("block: a healthy gate still passes conformant calls", async () => {
     const dir = await fixture({
       enabled: true,
-      governedLoop: true,
+      governance: "full",
       gateFailurePosture: "block",
     });
     const pi = new FakePi();

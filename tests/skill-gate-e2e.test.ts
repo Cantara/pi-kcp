@@ -110,7 +110,7 @@ async function upToPlan(pi: FakePi): Promise<void> {
 
 describe("the plan stage gates skills through the planner", () => {
   beforeAll(async () => {
-    dir = await fixture({ enabled: true, governedLoop: true });
+    dir = await fixture({ enabled: true, governance: "full" });
   });
   afterAll(async () => {
     await rm(dir, { recursive: true, force: true });

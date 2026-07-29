@@ -72,7 +72,7 @@ describe("/kcp evidence", () => {
     await mkdir(join(dir, ".pi"), { recursive: true });
     await writeFile(
       join(dir, ".pi", "kcp.json"),
-      JSON.stringify({ enabled: true, autoRecall: false, governedLoop: true }),
+      JSON.stringify({ enabled: true, autoRecall: false, governance: "full" }),
     );
   });
   afterAll(async () => {

@@ -121,6 +121,40 @@ planning is affordable; caching is for determinism, not speed.
    that was not a declared unit — an ungoverned procedure in the repo that defines the
    plane. Now declared.
 
+## Three modes, and the default (2026-07-29)
+
+A boolean was the wrong shape. `full` requires kcp-agent and spends a subprocess per turn;
+plenty of deployments want the enforcement without the dependency. So:
+
+| Mode | Stages | Subprocesses/turn |
+|---|---|---|
+| `full` | all seven, incl. the planner trace that gates skills | 1 (measured) |
+| `tool` | `approve`, `act` — conformance and integrity at the boundary | **0** |
+| `off` | none recorded | 0 |
+
+`tool` is the default. It is the enforcement that matters — a non-conformant call blocked,
+a mutated call detected — with no new dependency and no per-turn cost. `full` is opt-in
+because it puts a subprocess and a required binary on the critical path of every turn.
+
+`off` still runs `tool_call` conformance: that predates the cycle, and "no cycle" is not
+"no enforcement". `governedLoop` never shipped (v0.4.1 predates all four phases), so this
+replaced it outright rather than layering on it.
+
+**A turn is judged against what its mode promised.** `TurnRecord` carries its own
+`expectedStages`, so `tool` mode is never reported ungoverned for stages it never claimed.
+
+### Conditional stages
+
+Flipping the default surfaced a defect that would have made the feature unusable: a turn
+that answers a question without using a tool never reaches `approve` or `act`, so **every
+ordinary Q&A turn announced itself as ungoverned**. A warning that fires during normal
+operation is not a warning — it trains people to ignore the real one.
+
+`approve` and `act` are conditional. At `turn_end` they are closed out as `skipped` with a
+reason: "no tool call this turn", or "tool call did not execute" when a call was approved
+but blocked. Both are decisions. The liveness warning is now reserved for turns where the
+cycle genuinely did not run.
+
 ## Consequences
 
 - pi-kcp is on the critical path of every turn in its host. Latency and correctness are ours.
