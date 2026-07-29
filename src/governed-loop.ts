@@ -23,6 +23,7 @@ import {
   ungovernedReason,
 } from "./runtime.js";
 import { digest } from "./evidence.js";
+import { admitSkill, findTracedUnit, type SkillAdmission, type TracedUnit } from "./skill-gate.js";
 import { detectAgentSkillLoad, detectForcedSkill, type SkillSelected } from "./skill-detection.js";
 import {
   DEMO_SIGNING_KEY_ID,
@@ -97,6 +98,11 @@ export interface GovernedLoopHooks {
   onSkillSelected?: (event: SkillSelected) => void;
   /** Notified whenever a plan is produced by the governed orchestration. */
   onPlanProduced?: (event: PlanProduced) => void;
+  /**
+   * Notified when a skill is refused by the planner's gates (#28) — stale, out-of-audience,
+   * deprecated, superseded. `reason` carries the planner's own words.
+   */
+  onSkillRefused?: (skill: SkillSelected, reason: string, admission: SkillAdmission) => void;
   /** Notified whenever a tool call is blocked as non-conformant. */
   onBlocked?: (action: ObservedAction, reason: string) => void;
   /**
@@ -169,6 +175,8 @@ export class GovernedLoop {
   private approvals = new Map<string, string>();
   /** Recent completed turn records, oldest first. Bounded — this is a window, not a store. */
   private history: TurnRecord[] = [];
+  /** The planner's traced units for this turn, when the plan stage produced them. */
+  private tracedUnits: TracedUnit[] | undefined;
 
   constructor(options: GovernedLoopOptions = {}) {
     this.checker = options.checker ?? passThroughChecker;
@@ -191,6 +199,7 @@ export class GovernedLoop {
       correlationId: this.turn.correlationId,
     });
     this.approvals.clear();
+    this.tracedUnits = undefined;
     return this.turn;
   }
 
@@ -294,10 +303,49 @@ export class GovernedLoop {
     return this.activeSkill;
   }
 
-  /** Record a skill selection and emit it. Used by both input and tool_call detection. */
-  private noteSkillSelected(event: SkillSelected): void {
+  /**
+   * Install the planner's traced units for this turn and re-adjudicate whatever skill is
+   * already active. A forced skill is selected at `input`, before the plan stage runs — so
+   * the verdict can arrive after the selection, and must be able to revoke it.
+   *
+   * Returns the skill that was revoked, if any.
+   */
+  setTracedUnits(units: TracedUnit[]): SkillSelected | undefined {
+    this.tracedUnits = units;
+    const active = this.activeSkill;
+    if (!active) return undefined;
+
+    const admission = this.adjudicateSkill(active);
+    if (admission.admitted) return undefined;
+
+    this.activeSkill = undefined;
+    this.hooks.onSkillRefused?.(active, admission.reason, admission);
+    return active;
+  }
+
+  /** The admission verdict for a skill against this turn's traced units. */
+  adjudicateSkill(skill: SkillSelected): SkillAdmission {
+    // No trace means the plan stage did not run, not that everything is refused. Gating is
+    // opt-in; a missing verdict must not become a silent denial.
+    if (!this.tracedUnits) {
+      return { admitted: true, governed: false, reason: "no planner trace for this turn", failedGates: [] };
+    }
+    return admitSkill(findTracedUnit(this.tracedUnits, skill), skill);
+  }
+
+  /**
+   * Record a skill selection and emit it — unless the planner's gates refuse it, in which
+   * case it never becomes active and the written reason is emitted instead (#28).
+   */
+  private noteSkillSelected(event: SkillSelected): SkillSelected | undefined {
+    const admission = this.adjudicateSkill(event);
+    if (!admission.admitted) {
+      this.hooks.onSkillRefused?.(event, admission.reason, admission);
+      return undefined;
+    }
     this.activeSkill = event;
     this.hooks.onSkillSelected?.(event);
+    return event;
   }
 
   /**
@@ -306,8 +354,7 @@ export class GovernedLoop {
    */
   observeInput(text: string, commands: readonly SlashCommandInfo[] = []): SkillSelected | undefined {
     const forced = detectForcedSkill(text, commands);
-    if (forced) this.noteSkillSelected(forced);
-    return forced;
+    return forced ? this.noteSkillSelected(forced) : undefined;
   }
 
   /**

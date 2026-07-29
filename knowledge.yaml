@@ -41,6 +41,13 @@ units:
     audience: [agent, developer]
     triggers: [install, smoke, validation, release, integration]
 
+  - id: pr-evaluation
+    path: .pi/skills/pr-evaluation/SKILL.md
+    intent: "How should an agent evaluate a pull request against pi-kcp's standards before merging?"
+    scope: project
+    audience: [agent]
+    triggers: [PR, pull request, review, evaluate, merge]
+
   - id: mcp-providers
     path: docs/mcp-providers.md
     intent: "How are optional KCP and code-intelligence MCP providers configured and substituted?"

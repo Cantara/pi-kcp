@@ -234,6 +234,34 @@ lifecycle events, each recording a decision against the turn's correlation id:
 At `turn_end` the record is emitted via the `onTurnRecorded` hook. If any stage's gate
 broke, or any stage never reported at all, `onUngoverned` fires with the reason.
 
+### Skills are gated before they shape a turn
+
+When the governed cycle is on, the plan stage runs `kcp-agent plan --trace --json`, which
+adjudicates every declared unit against the planner's 14 gates. A skill whose unit failed a
+gate never becomes active:
+
+```text
+## KCP — skill deploy was not loaded
+
+skill "deploy" refused by the planner — temporal: valid_until 2026-01-01 has passed
+
+It did not shape this turn.
+```
+
+The refusal carries the planner's own words rather than a paraphrase, because the detail is
+the evidence.
+
+Two deliberate non-refusals:
+
+- **A skill with no declared unit is admitted**, and recorded as ungoverned. Ordinary editor
+  skills keep working; the record just never claims they were checked.
+- **A missing trace means "not gated", not "gate broken".** If kcp-agent is absent or
+  predates `--trace`, the stage records `gated: false` and the turn proceeds. An absent tool
+  must not turn every turn into a governance failure.
+
+A skill forced with `/skill:<name>` is selected before the plan stage runs, so its verdict
+arrives after the selection — and revokes it if the gates refuse.
+
 ### What the record actually claims
 
 Each stage records a digest of what it saw, not a restatement of what was intended:
