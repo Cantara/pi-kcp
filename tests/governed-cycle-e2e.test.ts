@@ -79,8 +79,8 @@ describe("the governed cycle, end to end", () => {
   let offDir = "";
 
   beforeAll(async () => {
-    onDir = await fixture({ enabled: true, governedLoop: true });
-    offDir = await fixture({ enabled: true, governedLoop: false });
+    onDir = await fixture({ enabled: true, governance: "full" });
+    offDir = await fixture({ enabled: true, governance: "off" });
   });
   afterAll(async () => {
     await rm(onDir, { recursive: true, force: true });
@@ -153,9 +153,12 @@ describe("the governed cycle, end to end", () => {
     expect(ungoverned).toHaveLength(1);
     const [, reason] = ungoverned[0]!;
     expect(reason).toMatch(/never reached/);
-    for (const stage of ["load", "synthesize", "ground", "approve", "act"]) {
+    for (const stage of ["load", "synthesize", "ground"]) {
       expect(reason).toContain(stage);
     }
+    // approve/act are conditional on a tool being used — closed out as skipped at
+    // turn_end, so they are not part of the complaint.
+    expect(reason).not.toContain("approve");
   });
 
   it("records a blocked tool call as the approve stage refusing", async () => {
@@ -184,7 +187,7 @@ describe("the governed cycle, end to end", () => {
 describe("evidence integrity through the real handlers", () => {
   let onDir = "";
   beforeAll(async () => {
-    onDir = await fixture({ enabled: true, governedLoop: true });
+    onDir = await fixture({ enabled: true, governance: "full" });
   });
   afterAll(async () => {
     await rm(onDir, { recursive: true, force: true });

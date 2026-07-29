@@ -16,6 +16,8 @@ import { type ConformanceChecker, type ConformanceContext, type ObservedAction, 
 import { childContext, mintTraceparent, type TurnContext } from "./correlation.js";
 import {
   erroredStages,
+  expectedStagesFor,
+  type GovernanceMode,
   type Stage,
   type StageOutcome,
   TurnLedger,
@@ -177,6 +179,8 @@ export class GovernedLoop {
   private history: TurnRecord[] = [];
   /** The planner's traced units for this turn, when the plan stage produced them. */
   private tracedUnits: TracedUnit[] | undefined;
+  /** How much of the cycle this turn is accountable for. */
+  private mode: GovernanceMode = "full";
 
   constructor(options: GovernedLoopOptions = {}) {
     this.checker = options.checker ?? passThroughChecker;
@@ -190,13 +194,23 @@ export class GovernedLoop {
     this.ledger = new TurnLedger({ turnIndex: 0, correlationId: this.turn.correlationId });
   }
 
-  /** Start a new turn: mint a fresh correlation id, clear the skill, open a fresh ledger. */
-  beginTurn(turnIndex?: number): TurnContext {
+  /** The governance mode in force for the turn now in progress. */
+  currentMode(): GovernanceMode {
+    return this.mode;
+  }
+
+  /**
+   * Start a new turn: mint a fresh correlation id, clear the skill, open a ledger scoped to
+   * what `mode` is accountable for.
+   */
+  beginTurn(turnIndex?: number, mode: GovernanceMode = "full"): TurnContext {
     this.turn = mintTraceparent(turnIndex);
     this.activeSkill = undefined;
+    this.mode = mode;
     this.ledger = new TurnLedger({
       turnIndex: turnIndex ?? 0,
       correlationId: this.turn.correlationId,
+      expectedStages: expectedStagesFor(mode),
     });
     this.approvals.clear();
     this.tracedUnits = undefined;

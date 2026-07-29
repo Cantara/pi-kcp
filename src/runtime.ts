@@ -27,6 +27,35 @@ export const ALL_STAGES = [
 export type Stage = (typeof ALL_STAGES)[number];
 
 /**
+ * Stages that exist only when the turn used a tool. A turn that answered a question
+ * without acting never reaches them, and that is not a governance failure — so they are
+ * closed out as `skipped` rather than counted missing. Getting this wrong makes the
+ * liveness warning fire on ordinary turns, and a warning that cries wolf is worse than
+ * no warning at all.
+ */
+export const TOOL_STAGES = ["approve", "act"] as const satisfies readonly Stage[];
+
+/**
+ * How much of the cycle runs.
+ *
+ * - `full` — all seven stages. The plan stage invokes the planner each turn, which gates
+ *   skill selection (#28) and requires kcp-agent to be installed.
+ * - `tool` — the governance boundary only: conformance at `tool_call`, integrity at
+ *   `tool_result`, recorded and asserted. No planner invocation, no dependency on
+ *   kcp-agent, no per-turn subprocess. The enforcement without the cost.
+ * - `off` — no cycle and no records. Conformance at `tool_call` still runs, because that
+ *   predates the cycle and turning it off is not what "no cycle" means.
+ */
+export type GovernanceMode = "full" | "tool" | "off";
+
+/** The stages a given mode is accountable for. */
+export function expectedStagesFor(mode: GovernanceMode): readonly Stage[] {
+  if (mode === "full") return ALL_STAGES;
+  if (mode === "tool") return TOOL_STAGES;
+  return [];
+}
+
+/**
  * What the runtime does when its own gate breaks.
  *
  * `announce` keeps the host usable and reports that the guarantee lapsed. `block` fails
@@ -55,6 +84,12 @@ export interface TurnRecord {
   readonly turnIndex: number;
   readonly correlationId: string;
   readonly decisions: readonly StageDecision[];
+  /**
+   * The stages this turn was accountable for. A turn is judged against what its mode
+   * promised, not against the full cycle — otherwise `tool` mode would report every turn
+   * as ungoverned for stages it never claimed to run.
+   */
+  readonly expectedStages: readonly Stage[];
 }
 
 /**
@@ -70,17 +105,21 @@ export interface StageOutcome {
 export interface TurnLedgerOptions {
   turnIndex: number;
   correlationId: string;
+  /** Defaults to the whole cycle. */
+  expectedStages?: readonly Stage[];
 }
 
 /** Accumulates one turn's stage decisions. One ledger per turn. */
 export class TurnLedger {
   private readonly turnIndex: number;
   private readonly correlationId: string;
+  private readonly expectedStages: readonly Stage[];
   private readonly decisions: StageDecision[] = [];
 
   constructor(options: TurnLedgerOptions) {
     this.turnIndex = options.turnIndex;
     this.correlationId = options.correlationId;
+    this.expectedStages = options.expectedStages ?? ALL_STAGES;
   }
 
   /**
@@ -113,13 +152,16 @@ export class TurnLedger {
       turnIndex: this.turnIndex,
       correlationId: this.correlationId,
       decisions: [...this.decisions],
+      expectedStages: this.expectedStages,
     };
   }
 }
 
 /** Stages that produced no decision at all — the runtime's blind spots for this turn. */
 export function missingStages(record: TurnRecord): Stage[] {
-  return ALL_STAGES.filter((stage) => !record.decisions.some((d) => d.stage === stage));
+  return record.expectedStages.filter(
+    (stage) => !record.decisions.some((d) => d.stage === stage),
+  );
 }
 
 /** Stages whose gate broke. */

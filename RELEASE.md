@@ -1,5 +1,81 @@
 # Release notes
 
+## 0.5.0 — the loop closes, and it runs by default — 2026-07-29
+
+`0.4.x` could govern. `0.5.0` does.
+
+The seven stages of the governed cycle — plan, load, synthesize, ground, assess,
+approve, act — now run as **one sequence** across eight of Pi's lifecycle events, each
+recording a decision against the turn's correlation id. What was a set of ergonomic
+entry points is a runtime.
+
+### The constraint that shaped it
+
+Pi swallows extension-handler exceptions: every dispatch site in its extension runner
+wraps handlers in `try`/`catch` and continues. **A gate that throws does not stop a
+turn** — it produces one that completes ungoverned and silent, which is precisely the
+failure this release exists to prevent.
+
+So refusal always travels as a returned value, never an exception; the ledger catches
+its own errors in order to *record* them; and a stage that never reported is a recorded
+fact rather than an inference. When a turn is not governed, pi-kcp says so.
+
+### Three modes
+
+| Mode | What runs | Cost |
+|---|---|---|
+| `full` | all seven stages, incl. the per-turn planner trace that gates skill selection | one `kcp-agent` invocation/turn (~57ms); **requires kcp-agent** |
+| **`tool`** (default) | conformance at `tool_call`, integrity at `tool_result` | **no subprocess, no kcp-agent dependency** |
+| `off` | no cycle, no records | — |
+
+`off` is not "no enforcement": `tool_call` conformance predates the cycle and runs in
+every mode. A turn is judged against what its mode promised — `tool` is never reported
+ungoverned for stages it never claimed to run.
+
+Set it with `governance` in `.pi/kcp.json`, or `/kcp govern <full|tool|off|status>` for
+the session. Lowering the mode mid-session is announced; raising it is not.
+
+### Evidence that describes what happened
+
+Pi hands `beforeToolCall` and `afterToolCall` the same arguments object and invites
+extensions to modify a call by mutating it in place. So a call can change *after* the
+gate approved it, and nothing noticed.
+
+`approve` now digests the input the gate decided on, keyed by Pi's `toolCallId`; `act`
+digests what actually ran and compares. Divergence — or a call reaching `act` with no
+recorded approval — is `violated`, and a violated turn is not a governed turn.
+
+`/kcp evidence [n]` prints the spine:
+
+```text
+turn 4 — UNGOVERNED: approval was not honoured at: act
+  approve     ok        tool=bash toolCallId=call_a1 inputDigest=1df8bcca…
+  act         violated  toolCallId=call_a1 approvedDigest=1df8bcca… executedDigest=2911155a…
+```
+
+### Skills are gated before they shape a turn
+
+In `full` mode the plan stage runs `kcp-agent plan --trace --json`, adjudicating every
+declared unit against the planner's 14 gates. A skill whose unit failed one never
+becomes active, and the refusal carries the planner's own words — `temporal:
+valid_until 2026-01-01 has passed`, not "skill not allowed". A skill forced with
+`/skill:` is selected before the plan stage runs, so the verdict can revoke it.
+
+Dogfooding this found a real gap: pi-kcp shipped `pr-evaluation` as a skill that was not
+a declared unit — an ungoverned procedure in the repo that defines the plane. Now
+declared.
+
+### Migration
+
+`governedLoop` never shipped; `governance` replaces it. Existing `.pi/kcp.json` files
+remain valid and pick up `governance: "tool"`.
+
+### Corrections to earlier notes
+
+- `action_scope` does **not** reach `plan --json` (measured against kcp-agent 0.22.1).
+  The conformance `ScopeResolver` still reads the manifest.
+- The planner reports **14** gates, not 13.
+
 ## Runtime-depth governance — 2026-07-22
 
 This milestone turns `pi-kcp` from an ergonomics-and-recall adapter into the
