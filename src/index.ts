@@ -5,6 +5,8 @@ import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-a
 import { type GovernanceDecision, GovernedLoop } from "./governed-loop.js";
 import { type GateFailurePosture, type TurnRecord, ungovernedReason } from "./runtime.js";
 import { digest } from "./evidence.js";
+import { parseTrace } from "./skill-gate.js";
+import type { SkillSelected } from "./skill-detection.js";
 import { type ConformanceChecker } from "./conformance.js";
 import { HarnessConformanceChecker } from "./harness-conformance.js";
 import { supportsFlag } from "./agent-capability.js";
@@ -49,6 +51,8 @@ export type {
 export { ALL_STAGES, isGoverned, missingStages, erroredStages, violatedStages, ungovernedReason } from "./runtime.js";
 export { TURN_HISTORY_LIMIT } from "./governed-loop.js";
 export { canonicalJson, digest } from "./evidence.js";
+export { admitSkill, findTracedUnit, parseTrace } from "./skill-gate.js";
+export type { GateVerdict, SkillAdmission, TracedUnit } from "./skill-gate.js";
 export type { GateFailurePosture, Stage, StageDecision, StageStatus, TurnRecord } from "./runtime.js";
 export { childContext, isTraceparent, mintTraceparent, traceIdOf } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
@@ -483,6 +487,40 @@ async function runPlan(
   return normalizePlanJson(output);
 }
 
+/**
+ * Ask the planner to adjudicate every declared unit against its gates (#28).
+ *
+ * Returns `undefined` when the trace simply isn't available — no kcp-agent, or a build
+ * that predates `--trace`. That is "not gated", not "gate broken": an agent that isn't
+ * installed must not turn every turn into a governance failure. A *present* agent that
+ * fails is a real error and is allowed to throw.
+ */
+async function runSkillTrace(
+  pi: ExtensionAPI,
+  cwd: string,
+  intent: string,
+  config: KcpConfig,
+  correlationId?: string,
+): Promise<string | undefined> {
+  const invocation = await findAgentInvocation(pi, config);
+  if (!invocation) return undefined;
+
+  const supported = await supportsFlag(
+    () => pi.exec(invocation.command, [...invocation.args, "plan", "--help"], { timeout: 10_000 }),
+    "--trace",
+    `${invocation.command} ${invocation.args.join(" ")}`,
+  );
+  if (!supported) return undefined;
+
+  return runKcpAgent(
+    pi,
+    cwd,
+    ["plan", intent, "--manifest", resolve(cwd, config.manifest), "--trace", "--json"],
+    config,
+    correlationId,
+  );
+}
+
 async function runValidate(pi: ExtensionAPI, cwd: string, config: KcpConfig): Promise<string> {
   return runKcpAgent(pi, cwd, ["validate", resolve(cwd, config.manifest), "--json"], config);
 }
@@ -542,6 +580,22 @@ function renderTurnRecord(record: TurnRecord): string {
   return [head, `  correlation: ${record.correlationId}`, ...lines].join("\n");
 }
 
+/**
+ * Report that a skill was refused by the planner's gates. Carries the planner's own words:
+ * "deprecated since 2026-01-01" is evidence, "skill not allowed" is not.
+ */
+function announceSkillRefused(pi: ExtensionAPI, skill: SkillSelected, reason: string): void {
+  pi.sendMessage(
+    {
+      customType: "pi-kcp",
+      content: `## KCP — skill **${skill.skillName}** was not loaded\n\n${reason}\n\nIt did not shape this turn.`,
+      display: true,
+      details: { skill: skill.skillName, reason },
+    },
+    { deliverAs: "nextTurn" },
+  );
+}
+
 function publish(pi: ExtensionAPI, title: string, content: string, correlationId?: string): void {
   pi.sendMessage(
     {
@@ -584,7 +638,10 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
       checker: options.conformanceChecker ?? builtInChecker!,
       wallet,
       executor,
-      hooks: { onUngoverned: (record, reason) => announceUngoverned(pi, record, reason) },
+      hooks: {
+        onUngoverned: (record, reason) => announceUngoverned(pi, record, reason),
+        onSkillRefused: (skill, reason) => announceSkillRefused(pi, skill, reason),
+      },
     });
   const getCommands = (): SlashCommandInfo[] => {
     try {
@@ -750,6 +807,8 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // Decided at the same boundary, for the same reason: the posture that applies to a turn
   // is the one in force when it started.
   let posture: GateFailurePosture = "announce";
+  // The turn's configuration, captured with it, so the plan stage need not re-read disk.
+  let turnConfig: KcpConfig = defaultConfig;
 
   // Mint a fresh per-turn correlation id (#29) at the turn boundary.
   pi.on("turn_start", async (event, ctx) => {
@@ -757,6 +816,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     const { config } = await loadConfig(ctx.cwd);
     cycleActive = governOverride ?? (config.enabled && config.governedLoop);
     posture = config.gateFailurePosture;
+    turnConfig = config;
     // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
     // pinned it. Only the checker we own is mutated (never an injected one).
     if (builtInChecker && options.requireActiveSkill === undefined) {
@@ -813,7 +873,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     return decision.block ? { block: true, reason: decision.reason } : undefined;
   });
 
-  registerGovernedCycle(pi, loop, () => cycleActive);
+  registerGovernedCycle(pi, loop, () => cycleActive, () => turnConfig);
 }
 
 /**
@@ -824,19 +884,49 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
  * `unknown`, an untyped escape hatch. Every stage below anchors on a typed contract.
  * See docs/decisions/0003-governed-runtime.md.
  */
-function registerGovernedCycle(pi: ExtensionAPI, loop: GovernedLoop, active: () => boolean): void {
+function registerGovernedCycle(
+  pi: ExtensionAPI,
+  loop: GovernedLoop,
+  active: () => boolean,
+  turnConfig: () => KcpConfig,
+): void {
   // plan — the prompt is known and Pi has already assembled what it loaded, so the stage
   // can inspect that rather than re-discovering resources.
-  pi.on("before_agent_start", async (event) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     if (!active()) return undefined;
-    await loop.stage("plan", async () => ({
-      detail: {
+    await loop.stage("plan", async () => {
+      const detail: Record<string, unknown> = {
         promptBytes: Buffer.byteLength(event.prompt, "utf8"),
         systemPromptBytes: Buffer.byteLength(event.systemPrompt, "utf8"),
         systemPromptDigest: digest(event.systemPrompt),
         ...(loop.currentSkill() ? { skill: loop.currentSkill()?.skillName } : {}),
-      },
-    }));
+      };
+
+      // Procedural governance (#28): adjudicate declared units against the planner's gates
+      // now, so skill selection later in the turn has a verdict to consult — and so a skill
+      // already forced at `input` can still be revoked before it shapes anything.
+      const trace = await runSkillTrace(
+        pi,
+        ctx.cwd,
+        event.prompt,
+        turnConfig(),
+        loop.currentCorrelationId(),
+      );
+      if (trace === undefined) {
+        return { detail: { ...detail, gated: false } };
+      }
+
+      const units = parseTrace(trace);
+      const revoked = loop.setTracedUnits(units);
+      return {
+        detail: {
+          ...detail,
+          gated: true,
+          units: units.length,
+          ...(revoked ? { revokedSkill: revoked.skillName } : {}),
+        },
+      };
+    });
     return undefined;
   });
 

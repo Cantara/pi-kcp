@@ -141,7 +141,10 @@ function pathOverlaps(target: string, unitPath: string): boolean {
  * match (the harness's own resolution key), then falls back to a loose overlap between the
  * `SKILL.md` path the agent read and a unit's declared `path`.
  */
-export function matchSkillUnit(units: ManifestUnit[], skill: SkillSelected): ManifestUnit | undefined {
+export function matchSkillUnit<T extends { id?: unknown; path?: unknown }>(
+  units: readonly T[],
+  skill: SkillSelected,
+): T | undefined {
   const name = skill.skillName.toLowerCase();
   const byId = units.find((unit) => typeof unit.id === "string" && unit.id.toLowerCase() === name);
   if (byId) return byId;

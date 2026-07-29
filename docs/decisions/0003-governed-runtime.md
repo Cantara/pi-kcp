@@ -94,9 +94,32 @@ planning is affordable; caching is for determinism, not speed.
 
    A violated turn is not a governed turn, and outranks a missing stage in the reason: a
    gate that was overridden is worse news than one that never reported.
-4. **Procedural depth (#28).** Gate skill selection through the planner's 13 gates; drop the
-   conformance `ScopeResolver`'s re-read of `knowledge.yaml` now that `action_scope` reaches
-   `plan --json`.
+4. **Procedural depth (#28).** *(done)* Gate skill selection through the planner's gates.
+
+   The plan stage runs `kcp-agent plan --trace --json`, which adjudicates every declared
+   unit against **14** gates — audience, not_for, temporal, deprecated, supersession,
+   relevance, skill_eligibility, attestation, payment, access, strict, max_units,
+   money_budget, context_budget — and reports a written verdict per gate. A skill whose
+   unit failed one is refused with the planner's own words, before it shapes any action.
+   "deprecated since 2026-01-01" is evidence; "skill not allowed" is not.
+
+   A forced skill is selected at `input`, *before* the plan stage runs, so the verdict can
+   arrive after the selection and must be able to revoke it. It can.
+
+   A skill with no declared unit is admitted but recorded as `governed: false` — ordinary
+   editor skills keep working, and "ungoverned" is never mistaken for "checked and fine".
+   A missing trace (no kcp-agent, or one predating `--trace`) means *not gated*, not *gate
+   broken*: an absent tool must not turn every turn into a governance failure.
+
+   **Correction to an earlier claim in this document:** `action_scope` does **not** reach
+   `plan --json`. Measured 2026-07-29 against kcp-agent 0.22.1: zero occurrences in the
+   output, and none in pi-kcp's own `knowledge.yaml` either. `harness-conformance.ts` said
+   so in its own module doc all along. The `ScopeResolver` keeps reading the manifest, and
+   dropping that read stays open until the planner exposes scope.
+
+   **Dogfooding (#28 point 3)** found a real gap: pi-kcp shipped `pr-evaluation` as a skill
+   that was not a declared unit — an ungoverned procedure in the repo that defines the
+   plane. Now declared.
 
 ## Consequences
 
