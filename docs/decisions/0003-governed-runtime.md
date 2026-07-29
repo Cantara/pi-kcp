@@ -67,10 +67,21 @@ planning is affordable; caching is for determinism, not speed.
 
 ## Phases
 
-1. **The loop runs.** A stage sequencer with a decision record per stage per turn. Adopt
-   `before_agent_start`, `context`, `agent_end`, `turn_end`, `tool_result` (3 events → 8).
-2. **Runtime posture.** Explicit `block` for every refusal; governance-liveness assertions;
-   a kill switch that disables governance loudly rather than by crashing.
+1. **The loop runs.** *(done — #53)* A stage sequencer with a decision record per stage per
+   turn. Adopt `before_agent_start`, `context`, `agent_end`, `turn_end`, `tool_result`
+   (3 events → 8).
+2. **Runtime posture.** *(done)* Explicit `block` for every refusal; governance-liveness
+   assertions; a kill switch that disables governance loudly rather than by crashing.
+
+   Phase 1 shipped the liveness signal, but `register()` built its loop with **no hooks** —
+   so in the default path `onUngoverned` fired into nothing and an ungoverned turn was
+   silent again. The default hooks are load-bearing, not decoration.
+
+   `gateFailurePosture` decides what happens when the runtime's own gate breaks:
+   `"announce"` (default) reports the lapse and keeps the host usable; `"block"` fails
+   closed at `tool_call`, the only refusal Pi honours. `/kcp govern <on|off|status>` is the
+   in-session switch, and turning governance *off* is announced — disabling a guarantee is
+   a governance decision, not a preference.
 3. **Evidence integrity.** Record what was *actually* sent — post-injection context,
    post-mutation tool input — not what was planned. `correlationKey()` already joins the
    hops; this fills them in.

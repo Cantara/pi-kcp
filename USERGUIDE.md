@@ -49,6 +49,7 @@ pi -e ./src/index.ts
 /kcp plan <intent>        Add a deterministic knowledge plan to the next turn
 /kcp validate             Validate the project's knowledge.yaml
 /kcp init                 Create knowledge.yaml (won't overwrite an existing file)
+/kcp govern <on|off|status>  Turn the governed cycle on or off for this session
 ```
 
 Start with:
@@ -178,6 +179,7 @@ automatic behavior and is reported by `/kcp health`.
   "manifest": "knowledge.yaml",
   "requireActiveSkill": false,
   "governedLoop": false,
+  "gateFailurePosture": "announce",
   "agentCli": "/path/to/kcp-agent/dist/cli.js"
 }
 ```
@@ -195,8 +197,23 @@ automatic behavior and is reported by `/kcp health`.
   a turn that skipped the gate is reported rather than passing silently. See
   [The governed cycle](#the-governed-cycle) below. Opt-in for now: it puts pi-kcp on
   the critical path of every turn.
+- `gateFailurePosture` — what the runtime does when **its own gate breaks**, i.e. a
+  stage errored and it can no longer establish what is authorized.
+  - `"announce"` (default) — report the lapse prominently and keep the host usable.
+  - `"block"` — fail closed: refuse tool calls for the rest of the turn. Use it where a
+    turn that cannot be governed must not act.
 - `agentCli` — explicit kcp-agent CLI path or command. Discovery also checks
   `KCP_AGENT_CLI`, known Homebrew/npm install locations, and `kcp-agent` on `PATH`.
+
+### Turning it off
+
+`/kcp govern off` disables the cycle for the session without editing `.pi/kcp.json`;
+`/kcp govern on` restores it, and `/kcp govern status` reports which is in force and
+where it came from.
+
+Turning governance off is itself announced in the session. Disabling a guarantee is a
+governance decision, so it leaves the same trace a lapse does rather than happening
+quietly.
 
 ### The governed cycle
 
@@ -216,7 +233,20 @@ lifecycle events, each recording a decision against the turn's correlation id:
 At `turn_end` the record is emitted via the `onTurnRecorded` hook. If any stage's gate
 broke, or any stage never reported at all, `onUngoverned` fires with the reason.
 
-That second hook is the point. Pi swallows exceptions thrown by extension handlers — a
+When a turn was not governed, pi-kcp says so in the session — you do not have to go
+looking for it:
+
+```text
+## KCP — turn 4 completed ungoverned
+
+stage never reached the ledger: load, synthesize, ground
+
+Stages that did report: plan: ok, approve: ok, act: ok, assess: ok.
+
+Actions this turn were not covered by the governance guarantee.
+```
+
+That announcement is the point. Pi swallows exceptions thrown by extension handlers — a
 crashing gate does not stop a turn, it produces one that completes *ungoverned and
 silent*. So refusal always travels as a value (`block`), never as an exception, and the
 absence of a stage decision is recorded as a fact rather than left to be inferred.

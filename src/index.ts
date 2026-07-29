@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { type GovernanceDecision, GovernedLoop } from "./governed-loop.js";
+import type { GateFailurePosture, TurnRecord } from "./runtime.js";
 import { type ConformanceChecker } from "./conformance.js";
 import { HarnessConformanceChecker } from "./harness-conformance.js";
 import { supportsFlag } from "./agent-capability.js";
@@ -44,6 +45,8 @@ export type {
   PaymentGovernFn,
   PaymentGovernanceDecision,
 } from "./wallet.js";
+export { ALL_STAGES, isGoverned, missingStages, erroredStages, ungovernedReason } from "./runtime.js";
+export type { GateFailurePosture, Stage, StageDecision, StageStatus, TurnRecord } from "./runtime.js";
 export { childContext, isTraceparent, mintTraceparent, traceIdOf } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
 export {
@@ -116,6 +119,18 @@ export interface KcpConfig {
    * because it puts pi-kcp on the critical path of every turn.
    */
   governedLoop: boolean;
+  /**
+   * What the runtime does when its own gate breaks — a stage errored, so it can no longer
+   * establish what is authorized.
+   *
+   * - `"announce"` (default) — report the lapse prominently and keep the host usable.
+   * - `"block"` — fail closed: refuse tool calls for the rest of the turn. `tool_call` is
+   *   the only lever Pi honours, so this is the only real enforcement available.
+   *
+   * Throwing is never an option: Pi swallows handler exceptions, so a thrown refusal is
+   * indistinguishable from no refusal at all.
+   */
+  gateFailurePosture: GateFailurePosture;
   agentCli?: string;
 }
 
@@ -172,7 +187,8 @@ export const KCP_HELP = `pi-kcp — KCP agent proficiency and ergonomics
 /kcp recall <query>       Add episodic memory to the next turn
 /kcp plan <intent>        Add a deterministic knowledge plan to the next turn
 /kcp validate             Validate the project's knowledge.yaml
-/kcp init                 Create knowledge.yaml without overwriting an existing file`;
+/kcp init                 Create knowledge.yaml without overwriting an existing file
+/kcp govern <on|off|status>  Turn the governed cycle on or off for this session`;
 
 const RECALL_SIGNALS = [
   /\byesterday\b/i,
@@ -193,6 +209,7 @@ export const defaultConfig: KcpConfig = {
   manifest: "knowledge.yaml",
   requireActiveSkill: false,
   governedLoop: false,
+  gateFailurePosture: "announce",
 };
 
 export function shouldRecall(prompt: string): boolean {
@@ -284,6 +301,9 @@ export function parseConfig(value: unknown): LoadedConfig {
   if (value.manifest !== undefined && (typeof value.manifest !== "string" || value.manifest.trim() === "")) errors.push("manifest must be a non-empty string");
   if (value.requireActiveSkill !== undefined && typeof value.requireActiveSkill !== "boolean") errors.push("requireActiveSkill must be a boolean");
   if (value.governedLoop !== undefined && typeof value.governedLoop !== "boolean") errors.push("governedLoop must be a boolean");
+  if (value.gateFailurePosture !== undefined && value.gateFailurePosture !== "announce" && value.gateFailurePosture !== "block") {
+    errors.push('gateFailurePosture must be "announce" or "block"');
+  }
   if (value.agentCli !== undefined && (typeof value.agentCli !== "string" || value.agentCli.trim() === "")) errors.push("agentCli must be a non-empty string");
 
   if (errors.length > 0) {
@@ -479,6 +499,24 @@ function show(ctx: { hasUI: boolean; ui: { notify(message: string, level: "info"
   else console.log(message);
 }
 
+/**
+ * Report that a turn completed without the cycle governing it. This is the whole point of
+ * the ledger: Pi swallows handler exceptions, so a broken or absent gate otherwise looks
+ * exactly like a healthy one. Delivered as a visible message rather than a log line.
+ */
+function announceUngoverned(pi: ExtensionAPI, record: TurnRecord, reason: string): void {
+  const decided = record.decisions.map((d) => `${d.stage}: ${d.status}`).join(", ");
+  pi.sendMessage(
+    {
+      customType: "pi-kcp",
+      content: `## KCP — turn ${record.turnIndex} completed **ungoverned**\n\n${reason}\n\nStages that did report: ${decided || "none"}.\n\nActions this turn were not covered by the governance guarantee.`,
+      display: true,
+      details: { correlationId: record.correlationId, reason },
+    },
+    { deliverAs: "nextTurn" },
+  );
+}
+
 function publish(pi: ExtensionAPI, title: string, content: string, correlationId?: string): void {
   pi.sendMessage(
     {
@@ -511,12 +549,17 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // The loop itself is injectable so an embedder (or a test) can observe the governed
   // cycle through its hooks. When injected, the checker/wallet/executor options above are
   // the injected loop's own concern.
+  //
+  // The default hooks are load-bearing, not decoration: without a listener the liveness
+  // signal fires into nothing and an ungoverned turn is silent again — the exact failure
+  // the cycle exists to prevent.
   const loop =
     options.loop ??
     new GovernedLoop({
       checker: options.conformanceChecker ?? builtInChecker!,
       wallet,
       executor,
+      hooks: { onUngoverned: (record, reason) => announceUngoverned(pi, record, reason) },
     });
   const getCommands = (): SlashCommandInfo[] => {
     try {
@@ -607,6 +650,45 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
         return;
       }
 
+      if (subcommand === "govern") {
+        const arg = (rest[0] ?? "").toLowerCase();
+        const configured = config.enabled && config.governedLoop;
+
+        if (arg === "status" || arg === "") {
+          const effective = governOverride ?? configured;
+          const via = governOverride === undefined ? "from .pi/kcp.json" : "session override";
+          show(
+            ctx,
+            `pi-kcp governance: ${effective ? "on" : "off"} (${via})\n` +
+              `configured: ${configured ? "on" : "off"} · gate-failure posture: ${config.gateFailurePosture}`,
+          );
+          return;
+        }
+
+        if (arg === "on" || arg === "off") {
+          governOverride = arg === "on";
+          show(ctx, `pi-kcp governance: ${arg} (session override; .pi/kcp.json unchanged)`);
+          // Disabling the guarantee is itself a governance event — it gets the same
+          // visibility as a turn that lapsed, so it cannot be done quietly.
+          if (arg === "off") {
+            pi.sendMessage(
+              {
+                customType: "pi-kcp",
+                content:
+                  "## KCP — governance turned **off**\n\nThe governed cycle is disabled for this session. " +
+                  "Tool calls are no longer covered by the governance guarantee. Re-enable with `/kcp govern on`.",
+                display: true,
+              },
+              { deliverAs: "nextTurn" },
+            );
+          }
+          return;
+        }
+
+        show(ctx, `Usage: /kcp govern <on|off|status>`, "warning");
+        return;
+      }
+
       if (subcommand === "health") {
         const memory = await fetchJson(`${config.memoryUrl.replace(/\/$/, "")}/health`, config.timeoutMs)
           .then(() => "ok")
@@ -627,12 +709,18 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // the turn boundary: a turn is governed under one configuration, not one that can change
   // under it mid-flight — and it keeps the cycle off the disk on every lifecycle event.
   let cycleActive = false;
+  // Session override from `/kcp govern`; `undefined` means defer to configuration.
+  let governOverride: boolean | undefined;
+  // Decided at the same boundary, for the same reason: the posture that applies to a turn
+  // is the one in force when it started.
+  let posture: GateFailurePosture = "announce";
 
   // Mint a fresh per-turn correlation id (#29) at the turn boundary.
   pi.on("turn_start", async (event, ctx) => {
     loop.beginTurn(event.turnIndex);
     const { config } = await loadConfig(ctx.cwd);
-    cycleActive = config.enabled && config.governedLoop;
+    cycleActive = governOverride ?? (config.enabled && config.governedLoop);
+    posture = config.gateFailurePosture;
     // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
     // pinned it. Only the checker we own is mutated (never an injected one).
     if (builtInChecker && options.requireActiveSkill === undefined) {
@@ -665,6 +753,20 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
         ? { status: "blocked" as const, reason: decision.reason, detail: { tool: event.toolName } }
         : { detail: { tool: event.toolName } };
     });
+
+    // Fail-closed posture. If a stage has errored this turn, the runtime cannot establish
+    // what is authorized — so under `block` it authorizes nothing further. `tool_call` is
+    // the only refusal Pi actually honours, which is why enforcement lives here and not at
+    // the stage that broke.
+    if (!decision.block && posture === "block" && !loop.gateHealthy()) {
+      decision = {
+        block: true,
+        reason:
+          "governance could not be established for this turn (a stage gate errored); " +
+          'fail-closed by gateFailurePosture: "block"',
+      };
+    }
+
     return decision.block ? { block: true, reason: decision.reason } : undefined;
   });
 

@@ -27,6 +27,16 @@ export const ALL_STAGES = [
 export type Stage = (typeof ALL_STAGES)[number];
 
 /**
+ * What the runtime does when its own gate breaks.
+ *
+ * `announce` keeps the host usable and reports that the guarantee lapsed. `block` fails
+ * closed — if the runtime cannot establish what is authorized, it authorizes nothing.
+ * Refusal is a returned value either way: Pi swallows thrown exceptions, so throwing
+ * would be indistinguishable from not refusing at all.
+ */
+export type GateFailurePosture = "announce" | "block";
+
+/**
  * `ok` ran and passed · `skipped` deliberately not applicable this turn · `blocked`
  * governance refused (the gate working, not failing) · `errored` the gate itself broke.
  */
