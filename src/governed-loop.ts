@@ -15,6 +15,7 @@
 import { type ConformanceChecker, type ConformanceContext, type ObservedAction, passThroughChecker } from "./conformance.js";
 import { childContext, mintTraceparent, type TurnContext } from "./correlation.js";
 import {
+  erroredStages,
   type Stage,
   type StageOutcome,
   TurnLedger,
@@ -195,6 +196,15 @@ export class GovernedLoop {
   /** The current turn's stage record. */
   turnRecord(): TurnRecord {
     return this.ledger.record();
+  }
+
+  /**
+   * Whether the runtime's own gate is intact for this turn — no stage has errored yet.
+   * Once false, the runtime cannot claim to know what is authorized, which is what the
+   * fail-closed posture acts on. Resets at {@link beginTurn}.
+   */
+  gateHealthy(): boolean {
+    return erroredStages(this.ledger.record()).length === 0;
   }
 
   /**
