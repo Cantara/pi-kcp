@@ -2,7 +2,7 @@ import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
-import { GovernedLoop } from "./governed-loop.js";
+import { type GovernanceDecision, GovernedLoop } from "./governed-loop.js";
 import { type ConformanceChecker } from "./conformance.js";
 import { HarnessConformanceChecker } from "./harness-conformance.js";
 import { supportsFlag } from "./agent-capability.js";
@@ -82,6 +82,12 @@ export interface RegisterOptions {
    * {@link MockPaymentExecutor} over `walletProvider`.
    */
   paymentExecutor?: PaymentExecutor;
+  /**
+   * The governed loop to drive. Defaults to one built from the options above. Inject to
+   * observe the cycle via {@link GovernedLoopHooks} — `onTurnRecorded` / `onUngoverned`
+   * are how an embedder learns whether a turn was actually governed (#27).
+   */
+  loop?: GovernedLoop;
 }
 
 const DEFAULT_MEMORY_URL = "http://localhost:7735";
@@ -103,6 +109,13 @@ export interface KcpConfig {
    * conformance and defer to the other gates + approval.
    */
   requireActiveSkill: boolean;
+  /**
+   * Run the full governed cycle (#27) rather than the individual entry points — sequencing
+   * plan → load → synthesize → ground → assess → approve → act across Pi's lifecycle and
+   * recording a decision per stage. Opt-in while the runtime posture (#26 Phase 2) lands,
+   * because it puts pi-kcp on the critical path of every turn.
+   */
+  governedLoop: boolean;
   agentCli?: string;
 }
 
@@ -179,6 +192,7 @@ export const defaultConfig: KcpConfig = {
   timeoutMs: DEFAULT_TIMEOUT_MS,
   manifest: "knowledge.yaml",
   requireActiveSkill: false,
+  governedLoop: false,
 };
 
 export function shouldRecall(prompt: string): boolean {
@@ -269,6 +283,7 @@ export function parseConfig(value: unknown): LoadedConfig {
   }
   if (value.manifest !== undefined && (typeof value.manifest !== "string" || value.manifest.trim() === "")) errors.push("manifest must be a non-empty string");
   if (value.requireActiveSkill !== undefined && typeof value.requireActiveSkill !== "boolean") errors.push("requireActiveSkill must be a boolean");
+  if (value.governedLoop !== undefined && typeof value.governedLoop !== "boolean") errors.push("governedLoop must be a boolean");
   if (value.agentCli !== undefined && (typeof value.agentCli !== "string" || value.agentCli.trim() === "")) errors.push("agentCli must be a non-empty string");
 
   if (errors.length > 0) {
@@ -493,11 +508,16 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // settles it. Both default to deterministic, no-chain mocks; the executor shares the wallet.
   const wallet = options.walletProvider ?? new MockWallet();
   const executor = options.paymentExecutor ?? new MockPaymentExecutor(wallet);
-  const loop = new GovernedLoop({
-    checker: options.conformanceChecker ?? builtInChecker!,
-    wallet,
-    executor,
-  });
+  // The loop itself is injectable so an embedder (or a test) can observe the governed
+  // cycle through its hooks. When injected, the checker/wallet/executor options above are
+  // the injected loop's own concern.
+  const loop =
+    options.loop ??
+    new GovernedLoop({
+      checker: options.conformanceChecker ?? builtInChecker!,
+      wallet,
+      executor,
+    });
   const getCommands = (): SlashCommandInfo[] => {
     try {
       return pi.getCommands();
@@ -603,13 +623,20 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     },
   });
 
+  // Whether the governed cycle is running for the turn now in progress. Decided once, at
+  // the turn boundary: a turn is governed under one configuration, not one that can change
+  // under it mid-flight — and it keeps the cycle off the disk on every lifecycle event.
+  let cycleActive = false;
+
   // Mint a fresh per-turn correlation id (#29) at the turn boundary.
   pi.on("turn_start", async (event, ctx) => {
     loop.beginTurn(event.turnIndex);
+    const { config } = await loadConfig(ctx.cwd);
+    cycleActive = config.enabled && config.governedLoop;
     // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
     // pinned it. Only the checker we own is mutated (never an injected one).
     if (builtInChecker && options.requireActiveSkill === undefined) {
-      builtInChecker.requireActiveSkill = (await loadConfig(ctx.cwd)).config.requireActiveSkill;
+      builtInChecker.requireActiveSkill = config.requireActiveSkill;
     }
   });
 
@@ -629,10 +656,85 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // correlation id, and blocks non-conformant calls via the injected conformance seam.
   pi.on("tool_call", async (event, ctx) => {
     const input = event.input as Record<string, unknown>;
-    const decision = await loop.evaluateToolCall(event.toolName, input, { cwd: ctx.cwd }, getCommands());
-    if (decision.block) {
-      return { block: true, reason: decision.reason };
-    }
+    let decision: GovernanceDecision = { block: false };
+    // The approve stage. Recorded through the ledger so a broken gate is a fact rather
+    // than a swallowed exception; `evaluateToolCall` itself still decides.
+    await loop.stage("approve", async () => {
+      decision = await loop.evaluateToolCall(event.toolName, input, { cwd: ctx.cwd }, getCommands());
+      return decision.block
+        ? { status: "blocked" as const, reason: decision.reason, detail: { tool: event.toolName } }
+        : { detail: { tool: event.toolName } };
+    });
+    return decision.block ? { block: true, reason: decision.reason } : undefined;
+  });
+
+  registerGovernedCycle(pi, loop, () => cycleActive);
+}
+
+/**
+ * The governed cycle across Pi's lifecycle (#27). Eight events, seven stages, one decision
+ * record per stage per turn.
+ *
+ * `before_provider_request` is deliberately not used: its payload and result are both
+ * `unknown`, an untyped escape hatch. Every stage below anchors on a typed contract.
+ * See docs/decisions/0003-governed-runtime.md.
+ */
+function registerGovernedCycle(pi: ExtensionAPI, loop: GovernedLoop, active: () => boolean): void {
+  // plan — the prompt is known and Pi has already assembled what it loaded, so the stage
+  // can inspect that rather than re-discovering resources.
+  pi.on("before_agent_start", async (event) => {
+    if (!active()) return undefined;
+    await loop.stage("plan", async () => ({
+      detail: {
+        promptBytes: Buffer.byteLength(event.prompt, "utf8"),
+        systemPromptBytes: Buffer.byteLength(event.systemPrompt, "utf8"),
+        ...(loop.currentSkill() ? { skill: loop.currentSkill()?.skillName } : {}),
+      },
+    }));
+    return undefined;
+  });
+
+  // load — the context assembly point. Phase 1 records what was assembled; injection of
+  // planned units lands with the evidence-integrity work (Phase 3).
+  pi.on("context", async (event) => {
+    if (!active()) return undefined;
+    await loop.stage("load", async () => ({
+      detail: { messages: event.messages.length },
+    }));
+    return undefined;
+  });
+
+  // synthesize is the provider's, and ground checks what it returned. Both are known at
+  // agent_end: the messages are the evidence that synthesis happened at all.
+  pi.on("agent_end", async (event) => {
+    if (!active()) return undefined;
+    await loop.stage("synthesize", async () => ({
+      detail: { owner: "provider", messages: event.messages.length },
+    }));
+    await loop.stage("ground", async () => ({
+      detail: { messages: event.messages.length },
+    }));
+    return undefined;
+  });
+
+  // act — the outcome of a tool call, which the approve stage never sees. Without this the
+  // loop watches actions get proposed and never learns what they did.
+  pi.on("tool_result", async (event) => {
+    if (!active()) return undefined;
+    await loop.stage("act", async () => ({
+      ...(event.isError ? { reason: `tool ${event.toolName} reported an error` } : {}),
+      detail: { tool: event.toolName, isError: event.isError },
+    }));
+    return undefined;
+  });
+
+  // assess closes the cycle, then the turn record is emitted and its governance asserted.
+  pi.on("turn_end", async (event) => {
+    if (!active()) return undefined;
+    await loop.stage("assess", async () => ({
+      detail: { toolResults: event.toolResults.length },
+    }));
+    loop.finishTurn();
     return undefined;
   });
 }
