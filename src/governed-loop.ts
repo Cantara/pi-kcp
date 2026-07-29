@@ -22,6 +22,7 @@ import {
   type TurnRecord,
   ungovernedReason,
 } from "./runtime.js";
+import { digest } from "./evidence.js";
 import { detectAgentSkillLoad, detectForcedSkill, type SkillSelected } from "./skill-detection.js";
 import {
   DEMO_SIGNING_KEY_ID,
@@ -149,6 +150,9 @@ export interface OrchestrationOutcome {
   skill?: SkillSelected;
 }
 
+/** How many completed turn records {@link GovernedLoop} keeps for inspection. */
+export const TURN_HISTORY_LIMIT = 20;
+
 export class GovernedLoop {
   private readonly checker: ConformanceChecker;
   private readonly hooks: GovernedLoopHooks;
@@ -161,6 +165,10 @@ export class GovernedLoop {
   private turn: TurnContext;
   private activeSkill: SkillSelected | undefined;
   private ledger: TurnLedger;
+  /** Input digests of tool calls approved this turn, keyed by Pi's toolCallId. */
+  private approvals = new Map<string, string>();
+  /** Recent completed turn records, oldest first. Bounded — this is a window, not a store. */
+  private history: TurnRecord[] = [];
 
   constructor(options: GovernedLoopOptions = {}) {
     this.checker = options.checker ?? passThroughChecker;
@@ -182,6 +190,7 @@ export class GovernedLoop {
       turnIndex: turnIndex ?? 0,
       correlationId: this.turn.correlationId,
     });
+    this.approvals.clear();
     return this.turn;
   }
 
@@ -191,6 +200,14 @@ export class GovernedLoop {
    */
   async stage(stage: Stage, body: () => Promise<StageOutcome | void>): Promise<void> {
     await this.ledger.run(stage, body);
+  }
+
+  /**
+   * Recent completed turns, oldest first, capped at {@link TURN_HISTORY_LIMIT}. A window
+   * for inspection — durable evidence belongs in the harness audit log, not in memory.
+   */
+  recentTurns(): readonly TurnRecord[] {
+    return this.history;
   }
 
   /** The current turn's stage record. */
@@ -208,12 +225,54 @@ export class GovernedLoop {
   }
 
   /**
+   * Remember what a tool call looked like when it was approved, keyed by Pi's
+   * `toolCallId`. Cleared at {@link beginTurn}.
+   */
+  noteApproval(toolCallId: string, inputDigest: string): void {
+    this.approvals.set(toolCallId, inputDigest);
+  }
+
+  /**
+   * Compare a tool call as executed against the input this loop approved.
+   *
+   * Pi hands `beforeToolCall` and `afterToolCall` the same args object and invites
+   * extensions to modify a call by mutating it in place, so a call can genuinely change
+   * between approval and execution. When it does, the approval no longer describes what
+   * ran — and the turn is not governed however healthy every gate looked.
+   *
+   * An unrecognised `toolCallId` is a violation too: something executed without passing
+   * the gate at all.
+   */
+  checkExecuted(toolCallId: string, executedInput: unknown): StageOutcome {
+    const executedDigest = digest(executedInput);
+    const approvedDigest = this.approvals.get(toolCallId);
+
+    if (approvedDigest === undefined) {
+      return {
+        status: "violated",
+        reason: `tool call ${toolCallId} executed with no recorded approval`,
+        detail: { toolCallId, executedDigest },
+      };
+    }
+    if (approvedDigest !== executedDigest) {
+      return {
+        status: "violated",
+        reason: `input for ${toolCallId} differs from what was approved — the call was modified after the gate`,
+        detail: { toolCallId, approvedDigest, executedDigest },
+      };
+    }
+    return { detail: { toolCallId, inputDigest: executedDigest } };
+  }
+
+  /**
    * Close the turn: emit its stage record and, when the cycle did not complete under
    * governance, say so explicitly. A turn that quietly skipped the gate is the failure
    * mode this exists to make impossible.
    */
   finishTurn(): TurnRecord {
     const record = this.ledger.record();
+    this.history.push(record);
+    if (this.history.length > TURN_HISTORY_LIMIT) this.history.shift();
     this.hooks.onTurnRecorded?.(record);
     const reason = ungovernedReason(record);
     if (reason) this.hooks.onUngoverned?.(record, reason);

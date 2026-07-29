@@ -38,9 +38,10 @@ export type GateFailurePosture = "announce" | "block";
 
 /**
  * `ok` ran and passed · `skipped` deliberately not applicable this turn · `blocked`
- * governance refused (the gate working, not failing) · `errored` the gate itself broke.
+ * governance refused (the gate working, not failing) · `errored` the gate itself broke ·
+ * `violated` the gate decided and was not honoured — what ran is not what was approved.
  */
-export type StageStatus = "ok" | "skipped" | "blocked" | "errored";
+export type StageStatus = "ok" | "skipped" | "blocked" | "errored" | "violated";
 
 export interface StageDecision {
   readonly stage: Stage;
@@ -126,16 +127,30 @@ export function erroredStages(record: TurnRecord): Stage[] {
   return record.decisions.filter((d) => d.status === "errored").map((d) => d.stage);
 }
 
+/** Stages where the gate's decision was not honoured. */
+export function violatedStages(record: TurnRecord): Stage[] {
+  return record.decisions.filter((d) => d.status === "violated").map((d) => d.stage);
+}
+
 /**
- * A turn is governed when every stage reported and none of them broke. A `blocked` stage
- * is governance succeeding, so it counts as governed.
+ * A turn is governed when every stage reported, none of them broke, and every decision
+ * was honoured. A `blocked` stage is governance succeeding, so it counts as governed.
  */
 export function isGoverned(record: TurnRecord): boolean {
-  return erroredStages(record).length === 0 && missingStages(record).length === 0;
+  return (
+    violatedStages(record).length === 0 &&
+    erroredStages(record).length === 0 &&
+    missingStages(record).length === 0
+  );
 }
 
 /** Why a turn was not governed, for the liveness assertion. `undefined` when it was. */
 export function ungovernedReason(record: TurnRecord): string | undefined {
+  // A violation outranks a gap: the gate ran, decided, and was overridden anyway. That is
+  // worse news than a stage that never reported.
+  const violated = violatedStages(record);
+  if (violated.length > 0) return `approval was not honoured at: ${violated.join(", ")}`;
+
   const errored = erroredStages(record);
   if (errored.length > 0) return `stage gate errored: ${errored.join(", ")}`;
 

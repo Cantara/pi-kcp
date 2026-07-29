@@ -3,7 +3,8 @@ import { constants } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { type GovernanceDecision, GovernedLoop } from "./governed-loop.js";
-import type { GateFailurePosture, TurnRecord } from "./runtime.js";
+import { type GateFailurePosture, type TurnRecord, ungovernedReason } from "./runtime.js";
+import { digest } from "./evidence.js";
 import { type ConformanceChecker } from "./conformance.js";
 import { HarnessConformanceChecker } from "./harness-conformance.js";
 import { supportsFlag } from "./agent-capability.js";
@@ -45,7 +46,9 @@ export type {
   PaymentGovernFn,
   PaymentGovernanceDecision,
 } from "./wallet.js";
-export { ALL_STAGES, isGoverned, missingStages, erroredStages, ungovernedReason } from "./runtime.js";
+export { ALL_STAGES, isGoverned, missingStages, erroredStages, violatedStages, ungovernedReason } from "./runtime.js";
+export { TURN_HISTORY_LIMIT } from "./governed-loop.js";
+export { canonicalJson, digest } from "./evidence.js";
 export type { GateFailurePosture, Stage, StageDecision, StageStatus, TurnRecord } from "./runtime.js";
 export { childContext, isTraceparent, mintTraceparent, traceIdOf } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
@@ -188,7 +191,8 @@ export const KCP_HELP = `pi-kcp — KCP agent proficiency and ergonomics
 /kcp plan <intent>        Add a deterministic knowledge plan to the next turn
 /kcp validate             Validate the project's knowledge.yaml
 /kcp init                 Create knowledge.yaml without overwriting an existing file
-/kcp govern <on|off|status>  Turn the governed cycle on or off for this session`;
+/kcp govern <on|off|status>  Turn the governed cycle on or off for this session
+/kcp evidence [n]         Show the stage record for the last n governed turns`;
 
 const RECALL_SIGNALS = [
   /\byesterday\b/i,
@@ -517,6 +521,27 @@ function announceUngoverned(pi: ExtensionAPI, record: TurnRecord, reason: string
   );
 }
 
+/**
+ * Render one turn's spine for reading. Digests are truncated — they are here to be
+ * compared, and a mismatch is legible long before 64 hex characters.
+ */
+function renderTurnRecord(record: TurnRecord): string {
+  const reason = ungovernedReason(record);
+  const head = reason
+    ? `turn ${record.turnIndex} — UNGOVERNED: ${reason}`
+    : `turn ${record.turnIndex} — governed`;
+
+  const lines = record.decisions.map((d) => {
+    const detail = d.detail ?? {};
+    const bits = Object.entries(detail)
+      .map(([k, v]) => `${k}=${typeof v === "string" && v.startsWith("sha256:") ? `${v.slice(7, 15)}…` : String(v)}`)
+      .join(" ");
+    return `  ${d.stage.padEnd(11)} ${d.status.padEnd(9)} ${bits}${d.reason ? ` — ${d.reason}` : ""}`;
+  });
+
+  return [head, `  correlation: ${record.correlationId}`, ...lines].join("\n");
+}
+
 function publish(pi: ExtensionAPI, title: string, content: string, correlationId?: string): void {
   pi.sendMessage(
     {
@@ -650,6 +675,17 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
         return;
       }
 
+      if (subcommand === "evidence") {
+        const turns = loop.recentTurns();
+        if (turns.length === 0) {
+          show(ctx, "pi-kcp evidence: no turns recorded yet (governed cycle off, or no turn has ended).");
+          return;
+        }
+        const count = Math.max(1, Math.min(Number(rest[0]) || 1, turns.length));
+        show(ctx, turns.slice(-count).map(renderTurnRecord).join("\n\n"));
+        return;
+      }
+
       if (subcommand === "govern") {
         const arg = (rest[0] ?? "").toLowerCase();
         const configured = config.enabled && config.governedLoop;
@@ -749,9 +785,16 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     // than a swallowed exception; `evaluateToolCall` itself still decides.
     await loop.stage("approve", async () => {
       decision = await loop.evaluateToolCall(event.toolName, input, { cwd: ctx.cwd }, getCommands());
-      return decision.block
-        ? { status: "blocked" as const, reason: decision.reason, detail: { tool: event.toolName } }
-        : { detail: { tool: event.toolName } };
+      // The digest of what was actually on the table when the gate decided. Pi invites
+      // later extensions to mutate `event.input` in place, so this is the only record of
+      // what the approval referred to.
+      const inputDigest = digest(input);
+      const detail = { tool: event.toolName, toolCallId: event.toolCallId, inputDigest };
+      if (decision.block) {
+        return { status: "blocked" as const, reason: decision.reason, detail };
+      }
+      loop.noteApproval(event.toolCallId, inputDigest);
+      return { detail };
     });
 
     // Fail-closed posture. If a stage has errored this turn, the runtime cannot establish
@@ -790,6 +833,7 @@ function registerGovernedCycle(pi: ExtensionAPI, loop: GovernedLoop, active: () 
       detail: {
         promptBytes: Buffer.byteLength(event.prompt, "utf8"),
         systemPromptBytes: Buffer.byteLength(event.systemPrompt, "utf8"),
+        systemPromptDigest: digest(event.systemPrompt),
         ...(loop.currentSkill() ? { skill: loop.currentSkill()?.skillName } : {}),
       },
     }));
@@ -801,7 +845,7 @@ function registerGovernedCycle(pi: ExtensionAPI, loop: GovernedLoop, active: () 
   pi.on("context", async (event) => {
     if (!active()) return undefined;
     await loop.stage("load", async () => ({
-      detail: { messages: event.messages.length },
+      detail: { messages: event.messages.length, contextDigest: digest(event.messages) },
     }));
     return undefined;
   });
@@ -823,10 +867,18 @@ function registerGovernedCycle(pi: ExtensionAPI, loop: GovernedLoop, active: () 
   // loop watches actions get proposed and never learns what they did.
   pi.on("tool_result", async (event) => {
     if (!active()) return undefined;
-    await loop.stage("act", async () => ({
-      ...(event.isError ? { reason: `tool ${event.toolName} reported an error` } : {}),
-      detail: { tool: event.toolName, isError: event.isError },
-    }));
+    await loop.stage("act", async () => {
+      // `afterToolCall` hands back the same args object `beforeToolCall` saw, so this
+      // compares what ran against what was approved rather than restating the intent.
+      const outcome = loop.checkExecuted(event.toolCallId, event.input);
+      return {
+        ...outcome,
+        ...(outcome.status === undefined && event.isError
+          ? { reason: `tool ${event.toolName} reported an error` }
+          : {}),
+        detail: { ...outcome.detail, tool: event.toolName, isError: event.isError },
+      };
+    });
     return undefined;
   });
 
