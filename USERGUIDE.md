@@ -50,6 +50,7 @@ pi -e ./src/index.ts
 /kcp validate             Validate the project's knowledge.yaml
 /kcp init                 Create knowledge.yaml (won't overwrite an existing file)
 /kcp govern <on|off|status>  Turn the governed cycle on or off for this session
+/kcp evidence [n]         Show the stage record for the last n governed turns
 ```
 
 Start with:
@@ -232,6 +233,38 @@ lifecycle events, each recording a decision against the turn's correlation id:
 
 At `turn_end` the record is emitted via the `onTurnRecorded` hook. If any stage's gate
 broke, or any stage never reported at all, `onUngoverned` fires with the reason.
+
+### What the record actually claims
+
+Each stage records a digest of what it saw, not a restatement of what was intended:
+
+- **plan** — a digest of the system prompt Pi assembled
+- **load** — a digest of the context as assembled
+- **approve** — Pi's `toolCallId` and a digest of the tool input *at the moment the gate
+  decided*
+- **act** — the same `toolCallId`, and a digest of the input *as executed*
+
+Pi hands `beforeToolCall` and `afterToolCall` the same arguments object, and tells
+extensions to modify a call by mutating `event.input` in place. So an extension ordered
+after pi-kcp can change a call the gate already approved. When that happens the two
+digests disagree, the `act` stage is recorded as `violated`, and the turn is **not
+governed** — however healthy every gate looked:
+
+```text
+turn 4 — UNGOVERNED: approval was not honoured at: act
+  correlation: 00-41da8731…-aec29dcd…-01
+  plan        ok        promptBytes=14 systemPromptDigest=b8760641…
+  load        ok        messages=2 contextDigest=002e5ea1…
+  approve     ok        tool=bash toolCallId=call_a1 inputDigest=1df8bcca…
+  act         violated  toolCallId=call_a1 approvedDigest=1df8bcca… executedDigest=2911155a…
+                        — input for call_a1 differs from what was approved
+```
+
+A tool call that reaches `act` with **no recorded approval** is a violation too: something
+executed without passing the gate at all.
+
+`/kcp evidence [n]` prints the last n turns. The window is bounded (20 turns) — it is for
+inspection, not storage; durable evidence belongs in the harness audit log.
 
 When a turn was not governed, pi-kcp says so in the session — you do not have to go
 looking for it:

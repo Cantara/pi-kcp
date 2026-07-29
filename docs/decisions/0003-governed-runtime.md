@@ -82,9 +82,18 @@ planning is affordable; caching is for determinism, not speed.
    closed at `tool_call`, the only refusal Pi honours. `/kcp govern <on|off|status>` is the
    in-session switch, and turning governance *off* is announced — disabling a guarantee is
    a governance decision, not a preference.
-3. **Evidence integrity.** Record what was *actually* sent — post-injection context,
-   post-mutation tool input — not what was planned. `correlationKey()` already joins the
-   hops; this fills them in.
+3. **Evidence integrity.** *(done)* Record what was *actually* sent — post-injection
+   context, post-mutation tool input — not what was planned.
+
+   Pi hands `beforeToolCall` and `afterToolCall` the same args object and invites
+   extensions to modify a call by mutating it in place, so a call can genuinely change
+   between approval and execution. The `approve` stage digests the input the gate decided
+   on, keyed by Pi's `toolCallId`; `act` digests what actually ran and compares. Divergence
+   — or a call reaching `act` with no recorded approval — is `violated`, a fifth stage
+   status meaning the gate decided and was not honoured.
+
+   A violated turn is not a governed turn, and outranks a missing stage in the reason: a
+   gate that was overridden is worse news than one that never reported.
 4. **Procedural depth (#28).** Gate skill selection through the planner's 13 gates; drop the
    conformance `ScopeResolver`'s re-read of `knowledge.yaml` now that `action_scope` reaches
    `plan --json`.
