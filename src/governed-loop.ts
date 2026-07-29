@@ -14,6 +14,13 @@
 
 import { type ConformanceChecker, type ConformanceContext, type ObservedAction, passThroughChecker } from "./conformance.js";
 import { childContext, mintTraceparent, type TurnContext } from "./correlation.js";
+import {
+  type Stage,
+  type StageOutcome,
+  TurnLedger,
+  type TurnRecord,
+  ungovernedReason,
+} from "./runtime.js";
 import { detectAgentSkillLoad, detectForcedSkill, type SkillSelected } from "./skill-detection.js";
 import {
   DEMO_SIGNING_KEY_ID,
@@ -95,6 +102,14 @@ export interface GovernedLoopHooks {
    * path. `event` is the `purchase_settled` audit event carrying the signed receipt (#139).
    */
   onSettled?: (action: ObservedAction, event: AuditEvent) => void;
+  /** Notified at `finishTurn` with the turn's complete stage record (#27). */
+  onTurnRecorded?: (record: TurnRecord) => void;
+  /**
+   * Notified at `finishTurn` when the turn was *not* governed — a stage gate broke, or a
+   * stage never reported. Pi swallows handler exceptions, so without this the turn would
+   * simply look fine. See docs/decisions/0003-governed-runtime.md.
+   */
+  onUngoverned?: (record: TurnRecord, reason: string) => void;
 }
 
 export interface GovernedLoopOptions {
@@ -144,6 +159,7 @@ export class GovernedLoop {
   private sequence = 0;
   private turn: TurnContext;
   private activeSkill: SkillSelected | undefined;
+  private ledger: TurnLedger;
 
   constructor(options: GovernedLoopOptions = {}) {
     this.checker = options.checker ?? passThroughChecker;
@@ -154,13 +170,44 @@ export class GovernedLoop {
     this.signingKeyId = options.signingKeyId ?? DEMO_SIGNING_KEY_ID;
     this.sessionId = options.sessionId ?? "pi-kcp-session";
     this.turn = mintTraceparent();
+    this.ledger = new TurnLedger({ turnIndex: 0, correlationId: this.turn.correlationId });
   }
 
-  /** Start a new turn: mint a fresh correlation id and clear the active skill. */
+  /** Start a new turn: mint a fresh correlation id, clear the skill, open a fresh ledger. */
   beginTurn(turnIndex?: number): TurnContext {
     this.turn = mintTraceparent(turnIndex);
     this.activeSkill = undefined;
+    this.ledger = new TurnLedger({
+      turnIndex: turnIndex ?? 0,
+      correlationId: this.turn.correlationId,
+    });
     return this.turn;
+  }
+
+  /**
+   * Run one stage of the governed cycle, recording its outcome. Never throws — see
+   * {@link TurnLedger.run} for why an error must not reach Pi.
+   */
+  async stage(stage: Stage, body: () => Promise<StageOutcome | void>): Promise<void> {
+    await this.ledger.run(stage, body);
+  }
+
+  /** The current turn's stage record. */
+  turnRecord(): TurnRecord {
+    return this.ledger.record();
+  }
+
+  /**
+   * Close the turn: emit its stage record and, when the cycle did not complete under
+   * governance, say so explicitly. A turn that quietly skipped the gate is the failure
+   * mode this exists to make impossible.
+   */
+  finishTurn(): TurnRecord {
+    const record = this.ledger.record();
+    this.hooks.onTurnRecorded?.(record);
+    const reason = ungovernedReason(record);
+    if (reason) this.hooks.onUngoverned?.(record, reason);
+    return record;
   }
 
   /** The current turn's correlation context. */

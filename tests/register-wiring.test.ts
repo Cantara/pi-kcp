@@ -66,7 +66,21 @@ describe("register() event wiring", () => {
   it("registers the runtime-depth event subscriptions", () => {
     const pi = new FakePi();
     register(pi.asApi());
-    expect([...pi.handlers.keys()].sort()).toEqual(["input", "tool_call", "turn_start"]);
+    // The governed cycle spans eight of Pi's lifecycle events (#27), up from three.
+    // `before_provider_request` is deliberately absent: its payload and result are both
+    // `unknown`, so it carries no contract to govern against.
+    // See docs/decisions/0003-governed-runtime.md.
+    expect([...pi.handlers.keys()].sort()).toEqual([
+      "agent_end",
+      "before_agent_start",
+      "context",
+      "input",
+      "tool_call",
+      "tool_result",
+      "turn_end",
+      "turn_start",
+    ]);
+    expect(pi.handlers.has("before_provider_request")).toBe(false);
     expect(pi.commands.has("kcp")).toBe(true);
   });
 

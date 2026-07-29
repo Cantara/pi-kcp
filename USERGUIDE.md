@@ -177,6 +177,7 @@ automatic behavior and is reported by `/kcp health`.
   "timeoutMs": 400,
   "manifest": "knowledge.yaml",
   "requireActiveSkill": false,
+  "governedLoop": false,
   "agentCli": "/path/to/kcp-agent/dist/cli.js"
 }
 ```
@@ -189,8 +190,36 @@ automatic behavior and is reported by `/kcp health`.
   calls taken with **no active skill** are fail-closed instead of passing through to
   the other gates. Use it for high-assurance autonomous agents that should only ever
   act within a declared skill's `action_scope`.
+- `governedLoop` — run the full governed cycle (default `false`). When `true`, pi-kcp
+  sequences all seven stages across Pi's lifecycle and records a decision for each, so
+  a turn that skipped the gate is reported rather than passing silently. See
+  [The governed cycle](#the-governed-cycle) below. Opt-in for now: it puts pi-kcp on
+  the critical path of every turn.
 - `agentCli` — explicit kcp-agent CLI path or command. Discovery also checks
   `KCP_AGENT_CLI`, known Homebrew/npm install locations, and `kcp-agent` on `PATH`.
+
+### The governed cycle
+
+With `governedLoop: true`, the seven stages run as one sequence over eight of Pi's
+lifecycle events, each recording a decision against the turn's correlation id:
+
+| Stage | Pi event | What it records |
+|---|---|---|
+| plan | `before_agent_start` | the prompt and what Pi had already assembled |
+| load | `context` | the assembled context |
+| approve | `tool_call` | the conformance verdict — `blocked` carries the reason |
+| act | `tool_result` | what the tool actually did, including errors |
+| synthesize | `agent_end` | that the provider produced output |
+| ground | `agent_end` | the output available to check |
+| assess | `turn_end` | the turn's tool results |
+
+At `turn_end` the record is emitted via the `onTurnRecorded` hook. If any stage's gate
+broke, or any stage never reported at all, `onUngoverned` fires with the reason.
+
+That second hook is the point. Pi swallows exceptions thrown by extension handlers — a
+crashing gate does not stop a turn, it produces one that completes *ungoverned and
+silent*. So refusal always travels as a value (`block`), never as an exception, and the
+absence of a stage decision is recorded as a fact rather than left to be inferred.
 
 ### `.pi/settings.json`
 
