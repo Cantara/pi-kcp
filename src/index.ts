@@ -53,6 +53,12 @@ export { TURN_HISTORY_LIMIT } from "./governed-loop.js";
 export { canonicalJson, digest } from "./evidence.js";
 export { admitSkill, findTracedUnit, parseTrace } from "./skill-gate.js";
 export type { GateVerdict, SkillAdmission, TracedUnit } from "./skill-gate.js";
+// §3.13 runtime grant_ceiling MIN authority gate (Gap 1).
+export { resolveEffectiveAuthority, authorityGate } from "./authority.js";
+export type { AuthorityLevelScale, AuthoritySource, EffectiveAuthority, AuthorityDecision } from "./authority.js";
+// §4.3b kind:playbook step-orchestrator (Gap 2).
+export { orderSteps, planPlaybook, checkStepConformance } from "./playbook.js";
+export type { ManifestStep, ManifestUnitLike, PlaybookManifest, GatedStep, PlaybookPlan, PlanPlaybookOptions } from "./playbook.js";
 export type { GateFailurePosture, GovernanceMode, Stage, StageDecision, StageStatus, TurnRecord } from "./runtime.js";
 export { childContext, isTraceparent, mintTraceparent, traceIdOf } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
