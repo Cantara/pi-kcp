@@ -29,24 +29,44 @@ units:
 
   - id: development-skill
     path: .pi/skills/pi-kcp-development/SKILL.md
+    kind: skill
     intent: "How should an agent implement and verify changes in pi-kcp without duplicating KCP services?"
     scope: project
     audience: [agent]
     triggers: [code, implement, refactor, verify, change]
+    load_eligible: true
+    action_scope:
+      tools: [bash, read, edit, write, grep, find, ls]
+      paths: ["src/**", "tests/**", "docs/**", "scripts/**", "AGENTS.md", "package.json"]
+      capabilities: ["pi-kcp.develop"]
 
   - id: installation-validation
     path: .pi/skills/installation-validation/SKILL.md
+    kind: skill
     intent: "How should an agent validate a fresh pi-kcp installation and its KCP integrations?"
     scope: project
     audience: [agent, developer]
     triggers: [install, smoke, validation, release, integration]
+    load_eligible: true
+    action_scope:
+      # Validation reads and runs; it does not edit the tree it is validating.
+      tools: [bash, read, ls]
+      paths: ["package.json", "src/**", "tests/**", "scripts/validate-install.ts", "knowledge.yaml"]
+      capabilities: ["pi-kcp.validate-install"]
 
   - id: pr-evaluation
     path: .pi/skills/pr-evaluation/SKILL.md
+    kind: skill
     intent: "How should an agent evaluate a pull request against pi-kcp's standards before merging?"
     scope: project
     audience: [agent]
     triggers: [PR, pull request, review, evaluate, merge]
+    load_eligible: true
+    action_scope:
+      # Evaluation judges a PR; it never writes to the branch it is judging.
+      tools: [bash, read]
+      paths: ["scripts/pr-eval.ts", "tests/pr-eval.test.ts", "docs/**"]
+      capabilities: ["pi-kcp.pr-eval"]
 
   - id: mcp-providers
     path: docs/mcp-providers.md
