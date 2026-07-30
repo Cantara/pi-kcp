@@ -22,6 +22,9 @@ export {
 } from "./harness-conformance.js";
 export type { CheckConformanceFn, HarnessConformanceOptions, ScopeResolver } from "./harness-conformance.js";
 export type { ActionScope, ConformanceVerdict } from "kcp-harness";
+// RFC-0029 / KCP 0.31 action_scope.deny — negative scope, deny-overrides-allow, fail-closed.
+export { parseDenyScope, deniesToken, evaluateDeny } from "./deny.js";
+export type { DenyScope, DenyDimension, DenyMatch, DeniableAction } from "./deny.js";
 export { GovernedLoop, detectPurchase } from "./governed-loop.js";
 export type { GovernanceDecision, PlanProduced, PurchaseIntent, SettlementResult, GovernedLoopHooks, GovernedLoopOptions } from "./governed-loop.js";
 export {
