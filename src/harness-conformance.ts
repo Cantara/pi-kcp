@@ -43,6 +43,7 @@ import type {
   ConformanceResult,
   ObservedAction,
 } from "./conformance.js";
+import { evaluateDeny, parseDenyScope } from "./deny.js";
 import type { SkillSelected } from "./skill-detection.js";
 
 /** The pure adjudicator's signature — injectable so tests can spy on the harness call. */
@@ -210,8 +211,17 @@ export class HarnessConformanceChecker implements ConformanceChecker {
     }
 
     const scope = await this.resolveScopeCached(skill, ctx);
+    const harnessAction = toHarnessAction(action);
+
+    // Deny-first (RFC-0029 / KCP 0.31): a requested tool/path/capability that matches the
+    // scope's negative-space `deny` sibling is REFUSED, and this refusal OVERRIDES any allow
+    // (and any grant) — it is evaluated before the allowlist adjudication and fails closed,
+    // naming the deny as the binding reason.
+    const denial = evaluateDeny(parseDenyScope(scope), harnessAction);
+    if (denial) return { conformant: false, reason: denial.reason };
+
     // An unresolved scope becomes `{}`; the harness fail-closes on a scope that declares nothing.
-    const verdict = this.adjudicate(toHarnessAction(action), scope ?? {});
+    const verdict = this.adjudicate(harnessAction, scope ?? {});
     return { conformant: verdict.passed, reason: verdict.reason };
   }
 
