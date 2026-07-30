@@ -1,4 +1,13 @@
 kcp_version: "0.30"
+
+# §3.13 (v0.27): the fixed ordinal authority scale. pi-kcp is the runtime that would
+# enforce these ceilings in-loop, so its own manifest goes first.
+authority_level_scale:
+  - observe
+  - explain
+  - suggest
+  - prepare
+  - commit
 project: pi-kcp
 version: 0.5.0
 updated: "2026-07-14"
@@ -35,6 +44,8 @@ units:
     audience: [agent]
     triggers: [code, implement, refactor, verify, change]
     load_eligible: true
+    # edits code on branches; merge belongs to review
+    authority_level: prepare
     action_scope:
       tools: [bash, read, edit, write, grep, find, ls]
       paths: ["src/**", "tests/**", "docs/**", "scripts/**", "AGENTS.md", "package.json"]
@@ -48,6 +59,8 @@ units:
     audience: [agent, developer]
     triggers: [install, smoke, validation, release, integration]
     load_eligible: true
+    # validates and reports; never edits the tree it validates
+    authority_level: explain
     action_scope:
       # Validation reads and runs; it does not edit the tree it is validating.
       tools: [bash, read, ls]
@@ -62,6 +75,8 @@ units:
     audience: [agent]
     triggers: [PR, pull request, review, evaluate, merge]
     load_eligible: true
+    # proposes a merge verdict; a human decides
+    authority_level: suggest
     action_scope:
       # Evaluation judges a PR; it never writes to the branch it is judging.
       tools: [bash, read]
