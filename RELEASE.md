@@ -1,5 +1,28 @@
 # Release notes
 
+## 0.8.0 — the playbook's deny, and the deny that is final — 2026-07-31
+
+KCP v0.32 (RFC-0030, §4.3b) in the runtime, in two halves.
+
+**A playbook's `action_scope.deny` is normative for enactment.** The playbook walk now
+folds the playbook's own `deny` into every step's adjudication as a **union** with the
+used skill's deny: a token matching either source is refused, overriding any allow,
+deny-first, with the matching source named as the binding source in the trace (both,
+when both match). Inline (`action`) steps — previously unbounded on every axis — are
+covered too: the playbook `deny` is the first hard edge they have ever had. The rest of
+the playbook `action_scope` envelope stays declarative, exactly as §4.3b says it must.
+
+**A deny is never grantable.** A deny-hit is refused *finally* and raises a notify-only
+**prohibited-attempt** event (`onProhibitedAttempt`, plus a distinct record in the
+approve stage's trace). Structurally: the loop refuses to record an approval for a
+prohibited input, so an execution of it is a recorded *violation*, never an enactment —
+no grant, approval, or escalation outcome can convert the block. The only way past a
+`deny` is a new, reviewed, signed manifest version that no longer declares it.
+
+New seams: `evaluateEffectiveDeny` / `DenySource` / `ProhibitedAttempt` (deny),
+`GatedStep.denySources` and `adjudicateStepAction` — a prohibited / held / conformant
+admission whose `prohibited` arm carries `escalatable: false` as a literal type.
+
 ## 0.5.0 — the loop closes, and it runs by default — 2026-07-29
 
 `0.4.x` could govern. `0.5.0` does.

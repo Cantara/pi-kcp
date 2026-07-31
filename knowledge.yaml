@@ -1,4 +1,4 @@
-kcp_version: "0.30"
+kcp_version: "0.32"
 
 # §3.13 (v0.27): the fixed ordinal authority scale. pi-kcp is the runtime that would
 # enforce these ceilings in-loop, so its own manifest goes first.
@@ -9,8 +9,8 @@ authority_level_scale:
   - prepare
   - commit
 project: pi-kcp
-version: 0.5.0
-updated: "2026-07-14"
+version: 0.8.0
+updated: "2026-07-31"
 language: en
 
 units:
