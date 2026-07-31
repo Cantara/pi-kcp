@@ -19,6 +19,12 @@
  * The reference implementation this mirrors lives in the KCP validator
  * (`knowledge-context-protocol` — `DenyScope`, `parseDenyScope`, `deniesToken`); the field
  * name and semantics match it exactly.
+ *
+ * RFC-0030 / KCP 0.32 (§4.3b) extends this with the UNION of deny sources — a playbook's
+ * own `deny` composed with the used skill's, a match in either refusing the token
+ * ({@link evaluateEffectiveDeny}, mirroring the reference `effectiveDeniesToken`) — and
+ * with deny FINALITY: a deny-hit raises a notify-only {@link ProhibitedAttempt} event and
+ * is never grantable.
  */
 
 import { matchesPrefix, normalizePath } from "kcp-harness";
@@ -146,6 +152,124 @@ function denialReason(dimension: DenyDimension, token: string, pattern: string, 
     `${noun} "${token}" is denied by action_scope.deny.${dimension} [${patterns.join(", ")}]` +
     ` (pattern "${pattern}") — deny overrides allow (fail-closed, RFC-0029)`
   );
+}
+
+/**
+ * One declaration an effective deny is drawn from (RFC-0030 / KCP 0.32 §4.3b): the
+ * playbook's own `action_scope.deny` or the used skill's. Named as the binding source in
+ * the decision trace — the same auditing shape as the §3.13 grant_ceiling minimum.
+ */
+export interface DenySource {
+  /** Where the deny was declared, e.g. `playbook:gdpr-deletion` or `skill:deletion-agent`. */
+  readonly id: string;
+  readonly deny: DenyScope | undefined;
+}
+
+/** A deny match adjudicated over the UNION of sources, naming every source that bound it. */
+export interface EffectiveDenyMatch extends DenyMatch {
+  /** The source(s) whose deny matched the token — both, when both match (§4.3b). */
+  readonly bindingSourceIds: readonly string[];
+}
+
+/**
+ * The notify-only prohibited-attempt event a deny-hit raises (RFC-0030). A deny is NEVER
+ * grantable: the action is refused finally, and no response to this event — grant,
+ * approval, or escalation, human or otherwise — may enact it. The only way past a deny is
+ * a new, reviewed, signed manifest version that no longer declares it. `grantable` is the
+ * literal `false` so no code path can type-correctly turn a prohibition into an approval.
+ */
+export interface ProhibitedAttempt {
+  readonly record: "prohibited_attempt";
+  readonly dimension: DenyDimension;
+  readonly token: string;
+  readonly pattern: string;
+  readonly bindingSourceIds: readonly string[];
+  readonly reason: string;
+  readonly grantable: false;
+}
+
+function effectiveDenialReason(
+  dimension: DenyDimension,
+  token: string,
+  pattern: string,
+  sourceIds: readonly string[],
+): string {
+  const noun = dimension === "tools" ? "tool" : dimension === "capabilities" ? "capability" : "target";
+  return (
+    `${noun} "${token}" is denied by action_scope.deny.${dimension} of ${sourceIds.join(" and ")}` +
+    ` (pattern "${pattern}") — deny overrides allow and is never grantable (fail-closed, RFC-0030 §4.3b)`
+  );
+}
+
+/** The sources (with their matching patterns) whose deny refuses one token, in declaration order. */
+function matchingSources(
+  sources: readonly DenySource[],
+  dimension: DenyDimension,
+  token: string,
+): Array<{ id: string; pattern: string }> {
+  const out: Array<{ id: string; pattern: string }> = [];
+  for (const source of sources) {
+    const pattern = deniesToken(source.deny, dimension, token);
+    if (pattern !== undefined) out.push({ id: source.id, pattern });
+  }
+  return out;
+}
+
+/**
+ * Evaluate an observed action against the UNION of deny sources (RFC-0030 / §4.3b):
+ * `effective_deny(step) = playbook.action_scope.deny ∪ uses(step).action_scope.deny`. A
+ * token matching EITHER source is denied, deny-first in the same order as
+ * {@link evaluateDeny} (tools, then every path/URL target, then every capability). Returns
+ * the first refused token with EVERY source that bound it — the trace names both when both
+ * match — or `undefined` when nothing is denied. Union is the only sound composition:
+ * adding a source can only refuse more, never less (the scope-axis mirror of the §3.13
+ * lowest-of rule).
+ */
+export function evaluateEffectiveDeny(
+  sources: readonly DenySource[],
+  action: DeniableAction,
+): EffectiveDenyMatch | undefined {
+  const bind = (dimension: DenyDimension, token: string): EffectiveDenyMatch | undefined => {
+    const matched = matchingSources(sources, dimension, token);
+    if (matched.length === 0) return undefined;
+    const pattern = matched[0]!.pattern;
+    const bindingSourceIds = matched.map((m) => m.id);
+    return {
+      dimension,
+      token,
+      pattern,
+      bindingSourceIds,
+      reason: effectiveDenialReason(dimension, token, pattern, bindingSourceIds),
+    };
+  };
+
+  const byTool = bind("tools", action.tool);
+  if (byTool) return byTool;
+
+  for (const target of [...(action.paths ?? []), ...(action.urls ?? [])]) {
+    const byPath = bind("paths", target);
+    if (byPath) return byPath;
+  }
+
+  for (const cap of action.capabilities ?? []) {
+    const byCapability = bind("capabilities", cap);
+    if (byCapability) return byCapability;
+  }
+
+  return undefined;
+}
+
+/** Shape an effective deny match as the §17-style prohibited-attempt event it raises. */
+export function prohibitedAttempt(match: EffectiveDenyMatch): ProhibitedAttempt {
+  return {
+    record: "prohibited_attempt",
+    dimension: match.dimension,
+    token: match.token,
+    pattern: match.pattern,
+    bindingSourceIds: match.bindingSourceIds,
+    reason: match.reason,
+    grantable: false,
+  };
 }
 
 /**

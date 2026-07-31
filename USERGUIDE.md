@@ -72,7 +72,7 @@ Governance is driven entirely by your `knowledge.yaml`. A **skill** is a unit wi
 permitted to touch. That scope is exactly what the runtime enforces.
 
 ```yaml
-kcp_version: "0.29"
+kcp_version: "0.32"
 project: my-app
 version: 1.0.0
 language: en

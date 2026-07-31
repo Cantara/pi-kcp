@@ -13,6 +13,7 @@
  */
 
 import { type ConformanceChecker, type ConformanceContext, type ObservedAction, passThroughChecker } from "./conformance.js";
+import type { ProhibitedAttempt } from "./deny.js";
 import { childContext, mintTraceparent, type TurnContext } from "./correlation.js";
 import {
   erroredStages,
@@ -53,6 +54,12 @@ import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 export interface GovernanceDecision {
   readonly block: boolean;
   readonly reason?: string;
+  /**
+   * Present iff a `deny` bound the refusal (RFC-0030): the notify-only prohibited-attempt
+   * event. The block is FINAL — the loop refuses to record any approval for the action, so
+   * no escalation path can turn it into an enactment.
+   */
+  readonly prohibited?: ProhibitedAttempt;
 }
 
 /** Emitted after a deterministic knowledge plan is produced for the turn. */
@@ -107,6 +114,13 @@ export interface GovernedLoopHooks {
   onSkillRefused?: (skill: SkillSelected, reason: string, admission: SkillAdmission) => void;
   /** Notified whenever a tool call is blocked as non-conformant. */
   onBlocked?: (action: ObservedAction, reason: string) => void;
+  /**
+   * Notified when a deny-hit refuses an action (RFC-0030) — the §17-style
+   * prohibited-attempt event, raised IN ADDITION to `onBlocked`. Notify-only: repeated
+   * attempts to do forbidden things is a governance signal, and the signal is only
+   * trustworthy because no response to this event can enact the refused action.
+   */
+  onProhibitedAttempt?: (action: ObservedAction, event: ProhibitedAttempt) => void;
   /**
    * Notified whenever a conformant purchase settles — the mirror of `onBlocked` on the spend
    * path. `event` is the `purchase_settled` audit event carrying the signed receipt (#139).
@@ -175,6 +189,12 @@ export class GovernedLoop {
   private ledger: TurnLedger;
   /** Input digests of tool calls approved this turn, keyed by Pi's toolCallId. */
   private approvals = new Map<string, string>();
+  /**
+   * Input digests refused by a deny this turn (RFC-0030). {@link noteApproval} refuses to
+   * record an approval for any of them, so a prohibited action structurally cannot become
+   * an approved one — an execution of it is a violation, never an enactment.
+   */
+  private prohibitedDigests = new Set<string>();
   /** Recent completed turn records, oldest first. Bounded — this is a window, not a store. */
   private history: TurnRecord[] = [];
   /** The planner's traced units for this turn, when the plan stage produced them. */
@@ -213,6 +233,7 @@ export class GovernedLoop {
       expectedStages: expectedStagesFor(mode),
     });
     this.approvals.clear();
+    this.prohibitedDigests.clear();
     this.tracedUnits = undefined;
     return this.turn;
   }
@@ -250,8 +271,14 @@ export class GovernedLoop {
   /**
    * Remember what a tool call looked like when it was approved, keyed by Pi's
    * `toolCallId`. Cleared at {@link beginTurn}.
+   *
+   * A deny is never grantable (RFC-0030): an input a deny refused this turn cannot be
+   * approved, whoever asks — the call is dropped, not recorded, so {@link checkExecuted}
+   * reports any execution of it as a violation. The block posture on a deny-hit is not
+   * convertible to announce/proceed by any escalation or approval outcome.
    */
   noteApproval(toolCallId: string, inputDigest: string): void {
+    if (this.prohibitedDigests.has(inputDigest)) return;
     this.approvals.set(toolCallId, inputDigest);
   }
 
@@ -402,9 +429,15 @@ export class GovernedLoop {
 
     const verdict = await this.checker.check(action, ctx);
     if (!verdict.conformant) {
+      // A deny-hit is refused finally (RFC-0030): remember the prohibited input so no
+      // approval can ever record for it, and raise the notify-only event.
+      if (verdict.prohibited) {
+        this.prohibitedDigests.add(digest(input));
+        this.hooks.onProhibitedAttempt?.(action, verdict.prohibited);
+      }
       // A non-conformant purchase is blocked here — the wallet is never reached.
       this.hooks.onBlocked?.(action, verdict.reason);
-      return { block: true, reason: verdict.reason };
+      return { block: true, reason: verdict.reason, ...(verdict.prohibited ? { prohibited: verdict.prohibited } : {}) };
     }
 
     // Conformant buy → authorize with the wallet and settle via the executor, then emit the
@@ -439,7 +472,12 @@ export class GovernedLoop {
         purchase,
       };
       const verdict = await this.checker.check(purchaseAction, ctx);
-      if (!verdict.conformant) this.hooks.onBlocked?.(purchaseAction, verdict.reason);
+      if (!verdict.conformant) {
+        // Same finality as the tool boundary: a denied buy raises the prohibited-attempt
+        // event, and no grant against it settles the payment (RFC-0030).
+        if (verdict.prohibited) this.hooks.onProhibitedAttempt?.(purchaseAction, verdict.prohibited);
+        this.hooks.onBlocked?.(purchaseAction, verdict.reason);
+      }
       return { approved: verdict.conformant, reason: verdict.reason };
     };
 

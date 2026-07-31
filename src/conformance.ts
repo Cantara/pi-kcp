@@ -7,6 +7,7 @@
  * non-conformant verdict blocks the tool call before it executes.
  */
 
+import type { ProhibitedAttempt } from "./deny.js";
 import type { SkillSelected } from "./skill-detection.js";
 
 /** A tool call observed at the governance boundary, with its correlation and skill context. */
@@ -42,6 +43,13 @@ export interface ConformanceContext {
 export interface ConformanceResult {
   readonly conformant: boolean;
   readonly reason: string;
+  /**
+   * Present iff an `action_scope.deny` bound the refusal (RFC-0029/RFC-0030): the
+   * notify-only prohibited-attempt event. Unlike an ordinary non-conformant hold, a
+   * prohibited action is refused FINALLY — no grant, approval, or escalation outcome may
+   * enact it (§4.3b v0.32).
+   */
+  readonly prohibited?: ProhibitedAttempt;
 }
 
 /**

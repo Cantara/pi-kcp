@@ -18,6 +18,15 @@
  *     of the `kind: skill` unit the step `uses`. A step that `uses` a unit which does not
  *     resolve, is not a skill, or declares no scope fails closed — eligibility does not
  *     compose (§4.3c): a grant on the playbook does not reach the units its steps name.
+ *   - the **effective deny** (RFC-0030 / KCP 0.32, §4.3b): the playbook's own
+ *     `action_scope.deny` is NORMATIVE for enactment — a blanket prohibition over every
+ *     step, inline steps included — while the rest of the playbook's `action_scope`
+ *     envelope stays declarative. The effective denylist for a step is the UNION, per
+ *     dimension, of the playbook's deny and the used skill's deny; a token matching either
+ *     source is refused, overriding any allow, deny-first, with the matching source(s)
+ *     named as the binding source. A deny-hit is FINAL — {@link adjudicateStepAction}
+ *     shapes it as a notify-only prohibited-attempt event that no grant, approval, or
+ *     escalation outcome may enact.
  *
  * The resolved authority is threaded through: {@link PlaybookPlan.resolvedAuthority} is the
  * effective level of the terminal step, the ceiling the commit runs under.
@@ -36,6 +45,13 @@ import {
   type AuthorityLevelScale,
   type AuthoritySource,
 } from "./authority.js";
+import {
+  evaluateEffectiveDeny,
+  parseDenyScope,
+  prohibitedAttempt,
+  type DenySource,
+  type ProhibitedAttempt,
+} from "./deny.js";
 
 /** One step of a `kind: playbook` composition (§4.3b). */
 export interface ManifestStep {
@@ -83,6 +99,13 @@ export interface GatedStep {
   readonly bindingSourceIds: string[];
   /** The resolved `action_scope` of the `uses` skill, when one resolved. */
   readonly scope?: ActionScope;
+  /**
+   * The deny declarations that blanket this step (RFC-0030 / §4.3b): the playbook's own
+   * `action_scope.deny` — which reaches every step, inline ones included — and the used
+   * skill's, when either declares one. The effective denylist is their union, and a token
+   * matching any source is refused with that source named as binding.
+   */
+  readonly denySources: readonly DenySource[];
   /**
    * Whether the step's scope is verifiable — false for an inline (`action`) step, which
    * references no unit and is scope-*unbounded* (§4.3b), and false when `uses` did not
@@ -205,6 +228,8 @@ export function planPlaybook(
   ];
 
   const unitById = new Map(units.map((u) => [u.id, u]));
+  // §4.3b v0.32: the playbook's own `deny` is normative — parsed once, bound to every step.
+  const playbookDeny = parseDenyScope(playbook.action_scope);
   const steps: GatedStep[] = ordered.order.map((step) => {
     const authority = authorityGate(scale, step.authority_level, externalSources);
     // §4.3b lowest-of, including the step's own level — the level actually enacted.
@@ -234,6 +259,13 @@ export function planPlaybook(
       scopeReason = `step '${step.id}' is an inline action — scope-unbounded, bounded only by authority (§4.3b)`;
     }
 
+    // The step's deny sources (RFC-0030): the playbook's blanket deny — inline steps
+    // included — plus the used skill's own deny when its scope resolved. Union of denies.
+    const denySources: DenySource[] = [];
+    if (playbookDeny) denySources.push({ id: `playbook:${playbookId}`, deny: playbookDeny });
+    const skillDeny = parseDenyScope(scope);
+    if (skillDeny) denySources.push({ id: `skill:${step.uses}`, deny: skillDeny });
+
     // Admission: authority must allow, and a `uses` step must resolve to a scoped skill.
     const scopeAdmits = step.uses ? scopeVerified : true;
     const admitted = authority.allowed && scopeAdmits;
@@ -251,6 +283,7 @@ export function planPlaybook(
       effectiveLevel: effective.effectiveLevel,
       bindingSourceIds: authority.bindingSourceIds,
       ...(scope ? { scope } : {}),
+      denySources,
       scopeVerified,
       authority,
       admitted,
@@ -268,13 +301,72 @@ export function planPlaybook(
  * `action_scope` of the skill the step `uses`. The same pure, deterministic
  * `checkConformance` the harness proxy makes its decision with — a step with no verified
  * scope authorizes nothing (fail-closed).
+ *
+ * Deny-first (RFC-0030 / §4.3b): before the allowlist adjudication, the action is checked
+ * against the step's effective deny — the union of the playbook's own `deny` and the used
+ * skill's. A match in either refuses the action, overriding any allow, with the binding
+ * source(s) named in the reason. This is how the playbook deny reaches inline (`action`)
+ * steps too, which have no `uses` scope to adjudicate against.
  */
 export function checkStepConformance(
   step: GatedStep,
   action: ObservedAction,
   check: typeof checkConformance = checkConformance,
 ): ConformanceVerdict {
+  const denial = evaluateEffectiveDeny(step.denySources, action);
+  if (denial) {
+    return {
+      gate: "conformance",
+      passed: false,
+      reason: denial.reason,
+      evidence: { tool: action.tool, target: denial.token },
+    };
+  }
   // An unverified/absent scope becomes `{}`; checkConformance fail-closes on a scope that
   // declares nothing, holding every action.
   return check(action, step.scope ?? {});
+}
+
+/**
+ * A step-action admission with the RFC-0030 distinction {@link checkStepConformance}'s
+ * binary verdict cannot carry: WHY the action did not pass decides what may happen next.
+ *
+ * - `conformant` — within scope, untouched by any deny.
+ * - `held` — outside the allowlist but named by no deny. `escalatable: true`: a §3.14
+ *   escalation / grant may still enact it, the way an over-threshold `spend` proceeds
+ *   once granted.
+ * - `prohibited` — a deny-hit. `escalatable: false` (the literal — no code path can flip
+ *   it), carrying the notify-only {@link ProhibitedAttempt} event. The action is refused
+ *   FINALLY: a grant resolved against the event records acknowledgement and MUST NOT
+ *   cause enactment; the only way past a deny is a new manifest version (§4.3b v0.32).
+ */
+export type StepActionAdmission =
+  | { readonly outcome: "conformant"; readonly reason: string }
+  | { readonly outcome: "held"; readonly escalatable: true; readonly reason: string }
+  | {
+      readonly outcome: "prohibited";
+      readonly escalatable: false;
+      readonly reason: string;
+      readonly event: ProhibitedAttempt;
+    };
+
+/**
+ * Adjudicate one action for one step, deny-first, separating the never-grantable refusal
+ * from the merely-held one. The discriminated union is the structural guarantee: an
+ * enactment path that switches on `outcome` has no branch in which a `prohibited` action
+ * proceeds, and `escalatable` is literally `false` on that arm.
+ */
+export function adjudicateStepAction(
+  step: GatedStep,
+  action: ObservedAction,
+  check: typeof checkConformance = checkConformance,
+): StepActionAdmission {
+  const denial = evaluateEffectiveDeny(step.denySources, action);
+  if (denial) {
+    return { outcome: "prohibited", escalatable: false, reason: denial.reason, event: prohibitedAttempt(denial) };
+  }
+  const verdict = check(action, step.scope ?? {});
+  return verdict.passed
+    ? { outcome: "conformant", reason: verdict.reason }
+    : { outcome: "held", escalatable: true, reason: verdict.reason };
 }

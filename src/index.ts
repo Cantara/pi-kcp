@@ -25,6 +25,10 @@ export type { ActionScope, ConformanceVerdict } from "kcp-harness";
 // RFC-0029 / KCP 0.31 action_scope.deny — negative scope, deny-overrides-allow, fail-closed.
 export { parseDenyScope, deniesToken, evaluateDeny } from "./deny.js";
 export type { DenyScope, DenyDimension, DenyMatch, DeniableAction } from "./deny.js";
+// RFC-0030 / KCP 0.32 (§4.3b) — union of denies with binding sources; a deny-hit raises a
+// notify-only prohibited-attempt event and is never grantable.
+export { evaluateEffectiveDeny, prohibitedAttempt } from "./deny.js";
+export type { DenySource, EffectiveDenyMatch, ProhibitedAttempt } from "./deny.js";
 export { GovernedLoop, detectPurchase } from "./governed-loop.js";
 export type { GovernanceDecision, PlanProduced, PurchaseIntent, SettlementResult, GovernedLoopHooks, GovernedLoopOptions } from "./governed-loop.js";
 export {
@@ -59,9 +63,10 @@ export type { GateVerdict, SkillAdmission, TracedUnit } from "./skill-gate.js";
 // §3.13 runtime grant_ceiling MIN authority gate (Gap 1).
 export { resolveEffectiveAuthority, authorityGate } from "./authority.js";
 export type { AuthorityLevelScale, AuthoritySource, EffectiveAuthority, AuthorityDecision } from "./authority.js";
-// §4.3b kind:playbook step-orchestrator (Gap 2).
-export { orderSteps, planPlaybook, checkStepConformance } from "./playbook.js";
-export type { ManifestStep, ManifestUnitLike, PlaybookManifest, GatedStep, PlaybookPlan, PlanPlaybookOptions } from "./playbook.js";
+// §4.3b kind:playbook step-orchestrator (Gap 2); adjudicateStepAction adds the RFC-0030
+// prohibited / held / conformant distinction on top of the binary verdict.
+export { orderSteps, planPlaybook, checkStepConformance, adjudicateStepAction } from "./playbook.js";
+export type { ManifestStep, ManifestUnitLike, PlaybookManifest, GatedStep, PlaybookPlan, PlanPlaybookOptions, StepActionAdmission } from "./playbook.js";
 export type { GateFailurePosture, GovernanceMode, Stage, StageDecision, StageStatus, TurnRecord } from "./runtime.js";
 export { childContext, isTraceparent, mintTraceparent, traceIdOf } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
@@ -881,7 +886,13 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
       const inputDigest = digest(input);
       const detail = { tool: event.toolName, toolCallId: event.toolCallId, inputDigest };
       if (decision.block) {
-        return { status: "blocked" as const, reason: decision.reason, detail };
+        // A deny-hit travels as a distinct prohibited-attempt record in the trace
+        // (RFC-0030): the refusal is final, and the event is the notify-only signal.
+        return {
+          status: "blocked" as const,
+          reason: decision.reason,
+          detail: decision.prohibited ? { ...detail, prohibitedAttempt: decision.prohibited } : detail,
+        };
       }
       loop.noteApproval(event.toolCallId, inputDigest);
       return { detail };

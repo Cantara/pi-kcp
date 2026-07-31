@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExecResult, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 
-import register, { passThroughChecker, type KcpConfig } from "../src/index.js";
+import register, { passThroughChecker, type KcpConfig, type ProhibitedAttempt } from "../src/index.js";
 import { ALL_STAGES, type TurnRecord } from "../src/runtime.js";
 import { GovernedLoop } from "../src/governed-loop.js";
 
@@ -181,6 +181,44 @@ describe("the governed cycle, end to end", () => {
     expect(blocked).toEqual({ block: true, reason: "policy denied" });
     const approve = records[0]!.decisions.find((d) => d.stage === "approve");
     expect(approve).toMatchObject({ status: "blocked", reason: "policy denied" });
+  });
+
+  // RFC-0030: a deny-hit is not an ordinary hold — it travels through the ledger as a
+  // distinct prohibited-attempt record, the notify-only event no approval can enact.
+  it("records a deny-hit as a prohibited-attempt in the approve stage's trace", async () => {
+    const records: TurnRecord[] = [];
+    const event: ProhibitedAttempt = {
+      record: "prohibited_attempt",
+      dimension: "tools",
+      token: "transfer_ownership",
+      pattern: "transfer_ownership",
+      bindingSourceIds: ["skill:deploy"],
+      reason: "denied by skill:deploy",
+      grantable: false,
+    };
+    const loop = new GovernedLoop({
+      checker: { async check() { return { conformant: false, reason: "denied by skill:deploy", prohibited: event }; } },
+      hooks: { onTurnRecorded: (r) => records.push(r) },
+    });
+    const pi = new FakePi();
+    register(pi.asApi(), { loop });
+
+    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, onDir);
+    const blocked = await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "transfer_ownership", input: {} },
+      onDir,
+    );
+    await pi.fire("turn_end", { turnIndex: 1, message: {}, toolResults: [] }, onDir);
+
+    expect(blocked.block).toBe(true);
+    const approve = records[0]!.decisions.find((d) => d.stage === "approve")!;
+    expect(approve.status).toBe("blocked");
+    expect(approve.detail!.prohibitedAttempt).toMatchObject({
+      record: "prohibited_attempt",
+      bindingSourceIds: ["skill:deploy"],
+      grantable: false,
+    });
   });
 });
 
