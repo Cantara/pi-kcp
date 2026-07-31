@@ -4,9 +4,11 @@ import {
   type ConformanceContext,
   deniesToken,
   evaluateDeny,
+  evaluateEffectiveDeny,
   HarnessConformanceChecker,
   type ObservedAction,
   parseDenyScope,
+  prohibitedAttempt,
   type ScopeResolver,
   type SkillSelected,
 } from "../src/index.js";
@@ -113,6 +115,54 @@ describe("deniesToken", () => {
   it("refuses nothing when the deny is undefined or the dimension is undeclared", () => {
     expect(deniesToken(undefined, "tools", "bash")).toBeUndefined();
     expect(deniesToken({ paths: ["/x/**"] }, "tools", "bash")).toBeUndefined();
+  });
+});
+
+// Pinned: the §4.3a v0.32.1 errata case (knowledge-context-protocol #189). The spec's own
+// reference validator adjudicated `deny.paths` by exact string equality, so a declared
+// `legal/hold/**` never fired against `legal/hold/2025/case.pdf` and the paths dimension of
+// a deny was unenforced. pi-kcp matches paths structurally (glob: `**` crosses segment
+// boundaries, `*` stays within one, literals escaped) — these tests pin that so a
+// regression to exact-string comparison cannot land silently.
+describe("deny.paths are patterns, not literals (§4.3a v0.32.1 errata)", () => {
+  const deny = { paths: ["legal/hold/**"] };
+
+  it("deniesToken: `legal/hold/**` glob-matches a nested relative path", () => {
+    expect(deniesToken(deny, "paths", "legal/hold/2025/case.pdf")).toBe("legal/hold/**");
+    // `**` binds to the declared subtree only — a sibling directory is untouched.
+    expect(deniesToken(deny, "paths", "legal/holdings/2025/case.pdf")).toBeUndefined();
+    // `*` stays within one segment: it may not cross into `2025/`.
+    expect(deniesToken({ paths: ["legal/hold/*"] }, "paths", "legal/hold/case.pdf")).toBe("legal/hold/*");
+    expect(deniesToken({ paths: ["legal/hold/*"] }, "paths", "legal/hold/2025/case.pdf")).toBeUndefined();
+  });
+
+  it("evaluateEffectiveDeny: the request is refused and shapes a notify-only prohibited_attempt", () => {
+    const match = evaluateEffectiveDeny(
+      [{ id: "skill:deletion-agent", deny }],
+      { tool: "read", paths: ["legal/hold/2025/case.pdf"] },
+    );
+    expect(match?.dimension).toBe("paths");
+    expect(match?.pattern).toBe("legal/hold/**");
+    expect(match?.token).toBe("legal/hold/2025/case.pdf");
+
+    const event = prohibitedAttempt(match!);
+    expect(event.record).toBe("prohibited_attempt");
+    expect(event.grantable).toBe(false);
+  });
+
+  it("HarnessConformanceChecker: the conformance gate refuses with the prohibited_attempt event", async () => {
+    // The allowlist grants the whole `legal/**` subtree; the deny carves out the hold.
+    const scope = { tools: ["read"], paths: ["legal/**"], deny } as ActionScope;
+    const checker = new HarnessConformanceChecker({ resolveScope: stubResolver(scope) });
+
+    const verdict = await checker.check(
+      action("read", { path: "legal/hold/2025/case.pdf" }, deploySkill),
+      ctx,
+    );
+    expect(verdict.conformant).toBe(false);
+    expect(verdict.prohibited?.record).toBe("prohibited_attempt");
+    expect(verdict.prohibited?.pattern).toBe("legal/hold/**");
+    expect(verdict.prohibited?.grantable).toBe(false);
   });
 });
 
