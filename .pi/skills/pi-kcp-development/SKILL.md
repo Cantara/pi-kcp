@@ -1,6 +1,6 @@
 ---
 name: pi-kcp-development
-description: Develop pi-kcp safely: understand the thin KCP adapter boundary, choose the right transport, run focused Bun verification, and keep provider-specific code out of the extension. Use for implementation, refactoring, or architecture decisions in this repository.
+description: "Develop pi-kcp safely: understand the thin KCP adapter boundary, choose the right transport, run focused Bun verification, and keep provider-specific code out of the extension. Use for implementation, refactoring, or architecture decisions in this repository."
 ---
 
 # pi-kcp development
