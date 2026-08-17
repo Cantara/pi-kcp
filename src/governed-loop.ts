@@ -186,6 +186,16 @@ export class GovernedLoop {
   private sequence = 0;
   private turn: TurnContext;
   private activeSkill: SkillSelected | undefined;
+  /**
+   * The user-forced `/skill:<name>` selection in force (source: `"user"`), remembered
+   * across turn boundaries. Pi emits `input` BEFORE the first `turn_start`, and
+   * `turn_start` fires again on every tool round — so a forced selection that lived only
+   * in {@link activeSkill} was wiped by {@link beginTurn} before the first `tool_call`
+   * could ever see it, and the `/skill:` forcing feature was unreachable for any
+   * RPC-driven client. {@link beginTurn} re-selects this after its reset; the next user
+   * `input` replaces or clears it, and a planner-gate revocation ends it.
+   */
+  private forcedSkill: SkillSelected | undefined;
   private ledger: TurnLedger;
   /** Input digests of tool calls approved this turn, keyed by Pi's toolCallId. */
   private approvals = new Map<string, string>();
@@ -222,6 +232,14 @@ export class GovernedLoop {
   /**
    * Start a new turn: mint a fresh correlation id, clear the skill, open a ledger scoped to
    * what `mode` is accountable for.
+   *
+   * An *agent-driven* skill selection is per-turn — tied to the `SKILL.md` read that made
+   * it — so the clear applies to it unconditionally, as before. A *user-forced* selection
+   * is per-prompt: `input` fires before the first `turn_start` and `turn_start` fires
+   * again on every tool round, so clearing it here would wipe it between detection and
+   * the first `tool_call` (with `requireActiveSkill` that turned every forced-skill
+   * prompt into a strict-mode refusal). It is re-selected after the reset instead — and
+   * each turn's plan stage can still refuse or revoke it via {@link setTracedUnits}.
    */
   beginTurn(turnIndex?: number, mode: GovernanceMode = "full"): TurnContext {
     this.turn = mintTraceparent(turnIndex);
@@ -235,6 +253,9 @@ export class GovernedLoop {
     this.approvals.clear();
     this.prohibitedDigests.clear();
     this.tracedUnits = undefined;
+    // Re-select the user-forced skill for the new turn (the trace was just cleared, so
+    // admission defers to this turn's plan stage — gating stays per-turn, not skipped).
+    if (this.forcedSkill) this.noteSkillSelected(this.forcedSkill);
     return this.turn;
   }
 
@@ -360,6 +381,10 @@ export class GovernedLoop {
     if (admission.admitted) return undefined;
 
     this.activeSkill = undefined;
+    // A revoked user-forced selection is ended, not resurrected: without this,
+    // beginTurn's re-selection would re-arm it every turn and the gate would refuse it
+    // again every turn — a refusal loop instead of a decision.
+    if (active.source === "user") this.forcedSkill = undefined;
     this.hooks.onSkillRefused?.(active, admission.reason, admission);
     return active;
   }
@@ -392,9 +417,14 @@ export class GovernedLoop {
   /**
    * Observe a user input line for a `/skill:<name>` forced-skill selection.
    * Returns the SkillSelected when detected (also emitted via hooks).
+   *
+   * Each prompt stands alone: a new input replaces the previous forced selection, and an
+   * input without a `/skill:` prefix ends it — the forced skill governs every turn of the
+   * prompt it was issued for, and no further.
    */
   observeInput(text: string, commands: readonly SlashCommandInfo[] = []): SkillSelected | undefined {
     const forced = detectForcedSkill(text, commands);
+    this.forcedSkill = forced;
     return forced ? this.noteSkillSelected(forced) : undefined;
   }
 
