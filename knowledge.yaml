@@ -90,6 +90,13 @@ units:
     audience: [agent, developer]
     triggers: [MCP, provider, Synthesis, directTools, harness]
 
+manifests:
+  # §3.6: `id` is REQUIRED and is how federation.manifest references resolve.
+  # Without it these entries are unreferenceable and the manifest fails validation.
+  - id: kcp-spec
+    url: https://cantara.github.io/knowledge-context-protocol/knowledge.yaml
+    relationship: foundation
+
 signing:
   scheme: ed25519
   scope: this-manifest
