@@ -1,8 +1,8 @@
 # pi-kcp
 
-### 🧾 **[Play the interactive demos → cantara.github.io/pi-kcp/playground](https://cantara.github.io/pi-kcp/playground/)**
+### 🧾 **[Play the interactive demos → cantara.github.io/kcp-playground](https://cantara.github.io/kcp-playground/)**
 
-Eleven in-browser stations that run the **real** KCP decision code live — drag the controls, watch the adjudicator re-decide, and see each verdict signed and printed as a receipt. Companion to the reveal, [*The AI Agent That Keeps the Receipts*](https://wiki.totto.org/blog/2026/07/22/the-ai-agent-that-keeps-the-receipts/).
+Sixteen in-browser stations that run the **real** KCP decision code live — drag the controls, watch the adjudicator re-decide, and see each verdict signed and printed as a receipt. Maintained in its own repo, [Cantara/kcp-playground](https://github.com/Cantara/kcp-playground) (the `playground/` directory in *this* repo is an older, unmaintained mirror — don't link to it). Companion to the reveal, [*The AI Agent That Keeps the Receipts*](https://wiki.totto.org/blog/2026/07/22/the-ai-agent-that-keeps-the-receipts/).
 
 ---
 
