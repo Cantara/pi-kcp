@@ -19,13 +19,14 @@ Each demo loads a real KCP `knowledge.yaml`, drives a real governance organ, and
 chain, the recall gate. Every governance verdict is the published tool's; nothing
 governance-critical is mocked.
 
-## The three batches
+## The four batches
 
 | Batch | Demos | Character |
 |-------|-------|-----------|
 | **1 — deterministic core** | 01–05 | No LLM, no external service. Planner gates, conformance, decision chains, evidence export, and an autonomous run contained in-loop. |
 | **2 — output gates + depth** | 06–10 | The **grounding** and **confidence** gates (LLM-optional), a real **memory** daemon over HTTP, governance as an **enabler**, and one adjudicator proven identical at two **depths**. |
 | **3 — commerce / governed value transfer (#139)** | 11–14 | The planner's **money_budget** gate, an x402 **shopping agent** whose buy clears purchase-conformance, a **runaway spender** contained in-loop, and **signed, verifiable, exportable** spend receipts. |
+| **4 — the real host** | 16 | The first demo to drive a **real Pi coding-agent session** — a real `pi` process, a real model, governed live by pi-kcp's own `tool_call` hook, rather than a scripted client. |
 
 Every batch-2 demo **degrades gracefully**:
 
@@ -48,6 +49,12 @@ Batch 3:
   handshake, faked on-chain settlement); the conformance, budget, and receipt
   **signatures are 100% real**.
 
+Batch 4:
+
+- **16** needs a real, installed `pi` (`@earendil-works/pi-coding-agent`, a repo
+  devDependency) and a working `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`; absent
+  either, it prints the prereq and **exits 0**.
+
 ## Prerequisites
 
 - **Node.js ≥ 20** (developed on Node 24). No global installs needed.
@@ -68,12 +75,15 @@ Optional, per demo:
 - **`bun`** — demo 10 transpiles pi-kcp's real TypeScript checker with it (falls
   back to the shared adjudicator without it); demos 12–14 transpile pi-kcp's real
   wallet + governed-loop seam with it (skip cleanly, exit 0, without it).
+- **`pi` (`@earendil-works/pi-coding-agent`)** and **`OPENAI_API_KEY` or
+  `ANTHROPIC_API_KEY`** — demo 16 spawns a real `pi` session; skipped cleanly,
+  exit 0, without either.
 
 ## Run everything
 
 ```bash
 cd demos
-./run-all.sh          # runs all fourteen demos; exits non-zero if any check fails
+./run-all.sh          # runs all sixteen demos; exits non-zero if any check fails
 ```
 
 Or run one at a time:
@@ -94,6 +104,7 @@ node 12-shopping-agent-x402/run.mjs
 node 13-runaway-spender/run.mjs
 node 14-signed-receipts/run.mjs
 node 15-governed-composition/run.mjs
+node 16-govern-the-coding-agent/run.mjs
 ```
 
 Each script prints the real governed output and a green/red verdict block, and
@@ -131,6 +142,12 @@ exits `0` only if every check passed.
 | 14 | [Signed Receipts / Provable Spend](14-signed-receipts/DEMO.md) | **signed receipts** — settled buys produce ed25519 receipts; `verifyPurchaseReceipt` accepts a genuine one and **rejects a tampered** one; each purchase reconstructs as a **decision chain**; a **compliance report** is exported | no |
 | 15 | [The Governed Composition](15-governed-composition/DEMO.md) | **`kind: playbook` (§4.3b)** — a promotion spanning `observe → prepare → commit`; an **ungranted playbook fails closed** exactly as an ungranted skill does; a superseded one is dropped by supersession; **no step exceeds the playbook ceiling** | no |
 
+**Batch 4 — the real host**
+
+| # | Demo | Organ / verdict exercised | LLM? |
+|---|------|---------------------------|------|
+| 16 | [We Govern Our Own Coding Agent, Too](16-govern-the-coding-agent/DEMO.md) | pi-kcp's own **`tool_call` hook** + built-in **`HarnessConformanceChecker`**, enforced against a **real Pi coding-agent turn** — the model reads its skill, does the in-scope read, then a real out-of-scope read is **blocked in-loop** before it ever executes | required |
+
 ## Layout
 
 ```
@@ -154,7 +171,8 @@ demos/
 ├── 12-shopping-agent-x402/       ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, buy-insight/SKILL.md}
 ├── 13-runaway-spender/           ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, buy-insight/SKILL.md}
 ├── 14-signed-receipts/           ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, buy-insight/SKILL.md}
-└── 15-governed-composition/      ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, skills/, playbooks/}
+├── 15-governed-composition/      ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, skills/, playbooks/}
+└── 16-govern-the-coding-agent/   ← DEMO.md · run.mjs · fixtures/{knowledge.yaml, .pi/kcp.json, skills/, ops/, secrets/}
 ```
 
 > The commerce demos (12–14) transpile pi-kcp's real wallet + governed-loop seam
@@ -189,3 +207,7 @@ organ/verdict it exercises.
   / verification (`signPurchaseReceipt` / `verifyPurchaseReceipt`). Only the x402
   **settlement** is a stub — a real HTTP two-request handshake with a faked
   on-chain confirmation (`lib/x402-stub.mjs`); no governance is mocked.
+- Demo 16 spawns the **real `pi` binary** (`@earendil-works/pi-coding-agent`)
+  with the **real pi-kcp extension** loaded (`-e src/index.ts`) and a **real
+  model** making the actual tool-call decisions — nothing about the agent or
+  the governance is scripted; only the task prompt is fixed.

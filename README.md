@@ -17,6 +17,8 @@ The project serves two audiences through separate but complementary lanes:
 - **Agent-facing:** skills teach the LLM when and how to use kcp-agent, kcp-memory, kcp-harness, and optional code intelligence.
 - **Human-facing:** slash commands and diagnostics make the same capabilities explicit and inspectable.
 
+The CLI is the primary interface, for both humans and agents: kcp-agent is invoked as a CLI directly, the same call path whether a human runs it from a terminal or an agent runs it from a plan step. `/kcp` and the other slash commands below are a discovery-and-ergonomics wrapper around that CLI, built for Pi's UX — not a replacement for it, and not the primary way in.
+
 The project deliberately uses separate transport lanes:
 
 - **Pi extension:** human-facing `/kcp` commands and bounded prompt recall.
