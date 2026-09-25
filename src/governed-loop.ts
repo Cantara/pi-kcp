@@ -441,6 +441,24 @@ export class GovernedLoop {
   }
 
   /**
+   * End the prompt: clear whatever {@link persistentSkill} carried across this prompt's
+   * tool rounds, forced or agent-driven. Pairs with Pi's `agent_end` (fired once per agent
+   * loop, i.e. once per prompt, however many `turn_start` rounds it took).
+   *
+   * `observeInput` only runs for non-`"extension"` input sources (`src/index.ts`'s
+   * `input` handler returns early for `source === "extension"` before calling it) — an
+   * extension-driven prompt (Pi's `sendUserMessage`) never reaches `observeInput`, so
+   * without this a skill selected in one prompt would leak into the next extension-driven
+   * one and, with `requireActiveSkill`, silently satisfy strict mode for it. Calling this
+   * unconditionally at `agent_end` closes that gap for both selection sources — it does
+   * not change within-prompt persistence (still governed by {@link beginTurn} and
+   * {@link setTracedUnits}).
+   */
+  endPrompt(): void {
+    this.persistentSkill = undefined;
+  }
+
+  /**
    * Evaluate a tool call at the governance boundary.
    *  - detects agent skill loads (read of SKILL.md) and records them,
    *  - builds an {@link ObservedAction} stamped with the turn correlation id + skill context,

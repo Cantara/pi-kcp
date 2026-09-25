@@ -326,3 +326,63 @@ describe("re-selection at the turn boundary stays gated per turn", () => {
     expect(refused).toHaveLength(1);
   });
 });
+
+describe("agent_end ends the prompt for extension-sourced input too (ref #68 follow-up)", () => {
+  it("does not let a skill read in one prompt satisfy strict mode in a later extension-driven prompt", async () => {
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    // Prompt 1: a normal user prompt that loads the skill via a SKILL.md read.
+    await pi.fire("input", { text: "run the deploy checklist", source: "rpc" }, dir);
+    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+    const load = await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "read", input: { path: `${dir}/skills/deploy/SKILL.md` } },
+      dir,
+    );
+    expect(load).toBeUndefined();
+    await pi.fire("agent_end", { messages: [{ role: "assistant" }] }, dir);
+
+    // Prompt 2: extension-sourced input (Pi's `sendUserMessage`, e.g. a tool feeding a
+    // follow-up message back to the agent) — `src/index.ts`'s `input` handler returns
+    // early for this source and never calls `observeInput`. Before this fix, the skill
+    // persisted from prompt 1 would still be active here and silently satisfy strict
+    // mode; it must not.
+    await pi.fire("input", { text: "now something else", source: "extension" }, dir);
+    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
+    const decision = await pi.fire(
+      "tool_call",
+      { toolCallId: "t2", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(decision.block).toBe(true);
+    expect(decision.reason).toContain(STRICT_REFUSAL);
+  });
+
+  it("also ends a user-forced /skill: selection at agent_end, before any next input", async () => {
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    await pi.fire("input", { text: "/skill:deploy go", source: "rpc" }, dir);
+    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+    const inScope = await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(inScope).toBeUndefined();
+    await pi.fire("agent_end", { messages: [{ role: "assistant" }] }, dir);
+
+    // Extension-sourced follow-up: the forced selection from the previous prompt must not
+    // survive it either (same field, same fix).
+    await pi.fire("input", { text: "continue", source: "extension" }, dir);
+    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
+    const decision = await pi.fire(
+      "tool_call",
+      { toolCallId: "t2", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(decision.block).toBe(true);
+    expect(decision.reason).toContain(STRICT_REFUSAL);
+  });
+});
