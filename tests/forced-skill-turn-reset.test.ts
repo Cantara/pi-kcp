@@ -176,8 +176,8 @@ describe("a user-forced skill survives the input → turn_start → tool_call se
   });
 });
 
-describe("the agent-driven skill lifecycle is unchanged (per-turn, tied to the SKILL.md read)", () => {
-  it("activates at the SKILL.md read, governs the rest of the turn, and is cleared at the next turn_start", async () => {
+describe("an agent-driven skill selection persists across tool rounds (ref #67)", () => {
+  it("activates at the SKILL.md read and keeps governing later turn_start rounds of the same prompt", async () => {
     const pi = new FakePi();
     register(pi.asApi());
 
@@ -201,16 +201,50 @@ describe("the agent-driven skill lifecycle is unchanged (per-turn, tied to the S
     );
     expect(sameTurn).toBeUndefined();
 
-    // But NOT the next: an agent-driven selection is per-turn — the next turn_start
-    // clears it exactly as before this fix.
+    // AND the next round: `turn_start` fires again per tool round (#67 — this used to be
+    // wiped here, and an out-of-scope action in this round would pass through ungoverned).
     await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
-    const nextTurn = await pi.fire(
+    const nextRoundInScope = await pi.fire(
       "tool_call",
       { toolCallId: "t3", toolName: "read", input: { path: "docs/deploy.md" } },
       dir,
     );
-    expect(nextTurn.block).toBe(true);
-    expect(nextTurn.reason).toContain(STRICT_REFUSAL);
+    expect(nextRoundInScope).toBeUndefined();
+
+    // The skill's action_scope (`tools: [read]`) still constrains the later round: a
+    // `write`-shaped call is blocked, not silently allowed as it was pre-fix.
+    const nextRoundOutOfScope = await pi.fire(
+      "tool_call",
+      { toolCallId: "t4", toolName: "write", input: { path: "/tmp/probe.txt", content: "x" } },
+      dir,
+    );
+    expect(nextRoundOutOfScope.block).toBe(true);
+    expect(nextRoundOutOfScope.reason).toContain('tool "write" is outside the skill\'s authorized tools');
+  });
+
+  it("ends at the next input that does not re-select it", async () => {
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    await pi.fire("input", { text: "run the deploy checklist", source: "rpc" }, dir);
+    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+    await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "read", input: { path: `${dir}/skills/deploy/SKILL.md` } },
+      dir,
+    );
+
+    // New prompt, no SKILL.md read in it: the prior agent-driven selection must not
+    // survive into it (strict mode fail-closes again, same as the forced-skill case).
+    await pi.fire("input", { text: "now something unrelated", source: "rpc" }, dir);
+    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
+    const decision = await pi.fire(
+      "tool_call",
+      { toolCallId: "t2", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(decision.block).toBe(true);
+    expect(decision.reason).toContain(STRICT_REFUSAL);
   });
 });
 
@@ -226,20 +260,27 @@ describe("re-selection at the turn boundary stays gated per turn", () => {
     );
   const commands = [{ name: "skill:deploy", description: "", source: "project" } as never];
 
-  it("re-selects a user-forced skill after beginTurn, agent-loaded is not re-selected", async () => {
+  it("re-selects both a user-forced and an agent-loaded skill after beginTurn (ref #67)", async () => {
     const loop = new GovernedLoop();
     loop.beginTurn(0);
 
-    // Agent-loaded: gone at the next turn boundary.
+    // Agent-loaded: now survives the turn boundary too.
     await loop.evaluateToolCall("read", { path: "skills/deploy/SKILL.md" }, { cwd: "/repo" });
     expect(loop.currentSkill()?.source).toBe("agent");
     loop.beginTurn(1);
-    expect(loop.currentSkill()).toBeUndefined();
+    expect(loop.currentSkill()?.skillName).toBe("deploy");
+    expect(loop.currentSkill()?.source).toBe("agent");
 
-    // User-forced: survives it.
+    // A later SKILL.md read for a different skill replaces it — still governed per-turn.
+    await loop.evaluateToolCall("read", { path: "skills/other/SKILL.md" }, { cwd: "/repo" });
+    expect(loop.currentSkill()?.skillName).toBe("other");
+    loop.beginTurn(2);
+    expect(loop.currentSkill()?.skillName).toBe("other");
+
+    // A subsequent /skill: input ends the agent-driven persistence and takes over.
     loop.observeInput("/skill:deploy go", commands);
     expect(loop.currentSkill()?.source).toBe("user");
-    loop.beginTurn(2);
+    loop.beginTurn(3);
     expect(loop.currentSkill()?.skillName).toBe("deploy");
     expect(loop.currentSkill()?.source).toBe("user");
   });
@@ -261,6 +302,25 @@ describe("re-selection at the turn boundary stays gated per turn", () => {
 
     // The next turn boundary must not re-arm what the gate revoked (that would be a
     // per-turn refusal loop, not a decision).
+    loop.beginTurn(1);
+    expect(loop.currentSkill()).toBeUndefined();
+    expect(refused).toHaveLength(1);
+  });
+
+  it("a planner-gate revocation of an agent-loaded skill is not resurrected next turn either", async () => {
+    const refused: Array<[SkillSelected, string]> = [];
+    const loop = new GovernedLoop({ hooks: { onSkillRefused: (s, r) => refused.push([s, r]) } });
+    loop.beginTurn(0);
+    await loop.evaluateToolCall("read", { path: "skills/deploy/SKILL.md" }, { cwd: "/repo" });
+    expect(loop.currentSkill()?.skillName).toBe("deploy");
+
+    const revoked = loop.setTracedUnits(
+      trace([{ id: "deploy", path: "skills/deploy/SKILL.md", gates: [{ gate: "temporal", passed: false, detail: "expired" }] }]),
+    );
+    expect(revoked?.skillName).toBe("deploy");
+    expect(loop.currentSkill()).toBeUndefined();
+    expect(refused).toHaveLength(1);
+
     loop.beginTurn(1);
     expect(loop.currentSkill()).toBeUndefined();
     expect(refused).toHaveLength(1);
