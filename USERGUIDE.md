@@ -136,7 +136,14 @@ For each turn, the extension runs this loop:
    **fail-open**: if memory is down or slow, the prompt is sent unchanged. A
    `/skill:<name>` line here forces that skill for the turn.
 3. **Skill gating.** When the agent loads a skill by reading its `SKILL.md`, that read
-   is recognized and the skill becomes *active* for the turn.
+   is recognized and the skill becomes *active* — for the rest of the **prompt**, not just
+   the turn it was read in: Pi fires a fresh `turn_start` on every tool round, and the
+   selection (agent-driven or `/skill:`-forced) now survives those round boundaries the
+   same way, so a skill's `action_scope` keeps constraining every later round of the same
+   prompt (ref #67). A later `SKILL.md` read for a different skill replaces it, a planner
+   revocation ends it early, and it is cleared once the prompt itself ends (Pi's
+   `agent_end`) — including a prompt driven by an extension-sourced `sendUserMessage`,
+   which bypasses the `/skill:` detection on `input` (ref #68).
 4. **Conformance block.** Every native `tool_call` is checked before it runs. When a
    skill is active, the call is mapped to a harness action (its tool name, plus `path`
    / `file_path` / `url` targets), the active skill's `action_scope` is resolved from

@@ -1097,6 +1097,11 @@ function registerGovernedCycle(
   // safe to trust here unlike in `before_agent_start`: `agent_end` firing after `turn_end`
   // means `turn_start` has definitely already run by now.
   pi.on("agent_end", async (event) => {
+    // Prompt boundary, unconditionally — not gated by `full()`. `agent_end` fires once per
+    // agent loop regardless of governance mode, and an extension-sourced `input` (Pi's
+    // `sendUserMessage`) never reaches `observeInput`'s clear, so this is the only place a
+    // skill selected under `tool` mode is guaranteed not to leak into the next prompt.
+    loop.endPrompt();
     if (!full()) return undefined;
     await loop.recordLateStage("synthesize", async () => ({
       detail: { owner: "provider", messages: event.messages.length },
