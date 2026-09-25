@@ -988,6 +988,11 @@ function registerGovernedCycle(
   // synthesize is the provider's, and ground checks what it returned. Both are known at
   // agent_end: the messages are the evidence that synthesis happened at all.
   pi.on("agent_end", async (event) => {
+    // Prompt boundary, unconditionally — not gated by `full()`. `agent_end` fires once per
+    // agent loop regardless of governance mode, and an extension-sourced `input` (Pi's
+    // `sendUserMessage`) never reaches `observeInput`'s clear, so this is the only place a
+    // skill selected under `tool` mode is guaranteed not to leak into the next prompt.
+    loop.endPrompt();
     if (!full()) return undefined;
     await loop.stage("synthesize", async () => ({
       detail: { owner: "provider", messages: event.messages.length },
