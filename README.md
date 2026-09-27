@@ -98,6 +98,65 @@ All fields are optional. Configuration values are validated; invalid configurati
 
 The health command reports configuration state, kcp-memory availability, and kcp-agent discovery. Missing configuration uses defaults; invalid configuration fails closed for automatic recall.
 
+## Persona-turn wrapper (bridge process transport)
+
+`dist/src/wrapper-cli.js` runs **one governed Pi turn as a subprocess** shaped for Sunstone Atlas's bridge process-transport tools: exactly one JSON object on stdout, exit 0 only when pi-kcp's own verdict (`isGoverned` in `src/runtime.ts`) says the turn was governed *and* its signed ledger entry (`createFileLedgerHook`, #151) was persisted. It drives Pi **in-process** through Pi's SDK (`createAgentSession` with pi-kcp as an inline extension factory — the same path Pi's own `main` takes), not `pi --mode rpc` as a child: that is the only route that reaches `RegisterOptions.loop`, and it needs nothing from stdin, which the bridge leaves open.
+
+```bash
+/usr/bin/node /abs/pi-kcp/dist/src/wrapper-cli.js \
+  --prompt "<the persona's question>" \
+  --cwd /abs/persona-workspace \          # must contain .pi/kcp.json with enabled:true, governance ≠ off
+  --model anthropic/claude-sonnet-4-5 \   # provider/id[:thinking]; Pi's built-in catalogue
+  --signing-key /abs/persona-a.pem \      # PKCS8 ed25519 private key; entries embed the SPKI public key
+  --ledger /abs/ledgers/persona-a.jsonl \ # append-only; verify with verifyLedgerFile()
+  [--api-key-env PERSONA_A_KEY]           # default ANTHROPIC_API_KEY — the ONLY env var read
+  [--persona <text>|--persona-file <abs>] # replaces Pi's system prompt
+  [--grounding <text>|--grounding-file <abs>]  # appended to the system prompt
+  [--tools read,grep] [--key-id persona-a] [--timeout-ms 50000]
+```
+
+Bridge config sketch (every `{param}` follows a literal flag, one argv element each; the credential is delivered via `token_env`, never argv):
+
+```json
+{ "system": "pi-kcp-persona",
+  "exec": { "command": "/usr/bin/node", "args": ["/abs/pi-kcp/dist/src/wrapper-cli.js"] },
+  "tools": { "persona-a-turn": {
+    "argv": ["--prompt", "{prompt}", "--grounding", "{grounding}",
+             "--cwd", "/abs/persona-a", "--model", "anthropic/claude-sonnet-4-5",
+             "--signing-key", "/abs/keys/persona-a.pem", "--ledger", "/abs/ledgers/persona-a.jsonl",
+             "--api-key-env", "PERSONA_A_KEY", "--key-id", "persona-a"],
+    "token_env": "PERSONA_A_KEY", "side_effect": "read" } } }
+```
+
+Exit codes: `0` governed, reply on stdout · `1` turn completed but not governed (stderr carries `ungovernedReason`; the lapse is still on the ledger) · `2` usage/config error, nothing ran and nothing was spent (bad argv, unreadable key, credential unset, unknown model, workspace config missing/`governance:"off"`) · `3` the model turn failed (Pi threw, or the assistant stopped with `error`/`aborted`) · `4` the ledger could not be written. A failure is always exit≠0 with an empty stdout — never exit 0 with an error object, which the bridge would sign onto its ledger as a genuine answer.
+
+Success stdout (one line): `{reply, replyDigest, governed:true, model, stopReason, correlationId, turnCount, turns:[{turnIndex, correlationId, stages:[{stage,status,reason?}]}], ledger:{path, entries:[{turnIndex, correlationId, signedAt, keyId?}], publicKey}}`. `correlationId` is the W3C traceparent that joins the reply to its ledger line.
+
+Isolation: in-memory auth/settings/session, an empty throwaway agent dir (no global extensions, skills, prompts or themes), `noExtensions` (pi-kcp is the only extension; project `.pi/skills` still load), no tools unless `--tools`, compaction off, the model turn aborted at `--timeout-ms` (default 50 s, under the bridge's fixed 60 s SIGKILL) so the ledger still flushes. The bridge's `expected_sha256` pin covers `exec.command` only (`/usr/bin/node` here), not the script — pinning the wrapper itself would need it packaged as a single executable, which this does not do yet.
+
+**Verification status.** The automated tests (`tests/wrapper-cli.test.ts`, `tests/wrapper-pi-driver.test.ts`) run the real `register()`, `GovernedLoop`, `HarnessConformanceChecker` and signed-ledger hook against a fake Pi, and build the real Pi SDK session with pi-kcp loaded — but they never call a model (no key in CI). Two hand runs of the built artifact under `/usr/bin/node` in an `env -i` shell close that gap:
+
+- **Placeholder key**: Pi built the session, the provider answered 401, the governed turn record was signed to the ledger and verified offline, exit 3.
+- **Real key, 2026-09-27**: a genuine exit **0**. `governed:true`, `stopReason:"stop"`, a real assistant reply from `anthropic/claude-sonnet-4-5`, `replyDigest` independently re-derived from the raw reply text (`digest()` from `evidence.ts` — `sha256(JSON.stringify(reply))`, not a raw hash — and confirmed byte-for-byte) and one ledger line that `verifyLedgerFile()` reports `valid: true` against the run's own embedded public key. **The success path is now observed, not just designed.**
+
+To reproduce (needs a real provider key exported as `$KEY`):
+
+```bash
+bun run build
+mkdir -p /tmp/persona-ws/.pi && echo '{"enabled":true,"autoRecall":false,"governance":"tool"}' > /tmp/persona-ws/.pi/kcp.json
+bun -e 'import {DEMO_SIGNING_KEY_PEM} from "./src/wallet.ts"; await Bun.write("/tmp/persona-demo.pem", DEMO_SIGNING_KEY_PEM)'   # demo key — replace in production
+env -i PERSONA_KEY="$KEY" /usr/bin/node "$PWD/dist/src/wrapper-cli.js" \
+  --prompt "Answer in one sentence: should we ship on Friday?" --cwd /tmp/persona-ws \
+  --model anthropic/claude-sonnet-4-5 --signing-key /tmp/persona-demo.pem \
+  --ledger /tmp/persona-ledger.jsonl --api-key-env PERSONA_KEY --key-id smoke; echo "exit=$?"
+# expect: exit=0, one JSON line on stdout with "governed":true, one verifiable line in /tmp/persona-ledger.jsonl
+bun -e 'import {verifyLedgerFile} from "./src/signed-ledger.ts"; console.log(await verifyLedgerFile("/tmp/persona-ledger.jsonl"))'
+```
+
+Still open: `governance:"full"` mode is untested under real Pi (only `"tool"` mode has a real-key run); no automated test covers the real-Pi → real-`GovernedLoop` → ledger link end-to-end, only these manual runs prove it.
+
+`env -i` matters: it reproduces the bridge's stripped child environment (no `PATH`, no `HOME`). Note that Pi's in-memory auth still falls back to `ANTHROPIC_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` from the process env when no override is injected; under the bridge those are absent, and the wrapper always injects the `--api-key-env` value as a runtime override, which outranks the fallback.
+
 ## MCP configuration
 
 Pi should continue to expose KCP and code-intelligence servers through `.pi/mcp.json`. Keep those servers lazy and avoid direct tool injection unless there is a deliberate reason to expose every tool in the prompt.

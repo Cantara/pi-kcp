@@ -70,6 +70,22 @@ export type { ManifestStep, ManifestUnitLike, PlaybookManifest, GatedStep, Playb
 export type { GateFailurePosture, GovernanceMode, Stage, StageDecision, StageStatus, TurnRecord } from "./runtime.js";
 export { childContext, isTraceparent, mintTraceparent, traceIdOf } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
+// #151 — persisted, signed turn ledger: signs + appends every completed TurnRecord (reusing
+// kcp-harness's ed25519 primitives, the same ones wallet.ts's settlement path already uses),
+// and an offline verifier to replay/audit a ledger file independent of the running process.
+export {
+  canonicalSignedTurnPayload,
+  createFileLedgerHook,
+  signTurnRecord,
+  verifyLedgerFile,
+  verifySignedTurnEntry,
+} from "./signed-ledger.js";
+export type {
+  FileLedgerOptions,
+  LedgerVerificationResult,
+  SignedTurnEntry,
+  SignedTurnSignature,
+} from "./signed-ledger.js";
 export {
   detectAgentSkillLoad,
   detectForcedSkill,
