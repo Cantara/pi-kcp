@@ -134,19 +134,26 @@ Success stdout (one line): `{reply, replyDigest, governed:true, model, stopReaso
 
 Isolation: in-memory auth/settings/session, an empty throwaway agent dir (no global extensions, skills, prompts or themes), `noExtensions` (pi-kcp is the only extension; project `.pi/skills` still load), no tools unless `--tools`, compaction off, the model turn aborted at `--timeout-ms` (default 50 s, under the bridge's fixed 60 s SIGKILL) so the ledger still flushes. The bridge's `expected_sha256` pin covers `exec.command` only (`/usr/bin/node` here), not the script — pinning the wrapper itself would need it packaged as a single executable, which this does not do yet.
 
-**Verification status.** The automated tests (`tests/wrapper-cli.test.ts`, `tests/wrapper-pi-driver.test.ts`) run the real `register()`, `GovernedLoop`, `HarnessConformanceChecker` and signed-ledger hook against a fake Pi, and build the real Pi SDK session with pi-kcp loaded — but they never call a model (no key in CI). The built artifact has been run by hand under `/usr/bin/node` in an `env -i` shell with a *placeholder* key: Pi built the session, the provider answered 401, the governed turn record was signed to the ledger and verified offline, exit 3. **A turn that completes with a real reply (exit 0, JSON on stdout) has not been observed yet.** To run that smoke test once a key is available:
+**Verification status.** The automated tests (`tests/wrapper-cli.test.ts`, `tests/wrapper-pi-driver.test.ts`) run the real `register()`, `GovernedLoop`, `HarnessConformanceChecker` and signed-ledger hook against a fake Pi, and build the real Pi SDK session with pi-kcp loaded — but they never call a model (no key in CI). Two hand runs of the built artifact under `/usr/bin/node` in an `env -i` shell close that gap:
+
+- **Placeholder key**: Pi built the session, the provider answered 401, the governed turn record was signed to the ledger and verified offline, exit 3.
+- **Real key, 2026-09-27**: a genuine exit **0**. `governed:true`, `stopReason:"stop"`, a real assistant reply from `anthropic/claude-sonnet-4-5`, `replyDigest` independently re-derived from the raw reply text (`digest()` from `evidence.ts` — `sha256(JSON.stringify(reply))`, not a raw hash — and confirmed byte-for-byte) and one ledger line that `verifyLedgerFile()` reports `valid: true` against the run's own embedded public key. **The success path is now observed, not just designed.**
+
+To reproduce (needs a real provider key exported as `$KEY`):
 
 ```bash
 bun run build
 mkdir -p /tmp/persona-ws/.pi && echo '{"enabled":true,"autoRecall":false,"governance":"tool"}' > /tmp/persona-ws/.pi/kcp.json
 bun -e 'import {DEMO_SIGNING_KEY_PEM} from "./src/wallet.ts"; await Bun.write("/tmp/persona-demo.pem", DEMO_SIGNING_KEY_PEM)'   # demo key — replace in production
-env -i PERSONA_KEY="$ANTHROPIC_API_KEY" /usr/bin/node "$PWD/dist/src/wrapper-cli.js" \
+env -i PERSONA_KEY="$KEY" /usr/bin/node "$PWD/dist/src/wrapper-cli.js" \
   --prompt "Answer in one sentence: should we ship on Friday?" --cwd /tmp/persona-ws \
   --model anthropic/claude-sonnet-4-5 --signing-key /tmp/persona-demo.pem \
   --ledger /tmp/persona-ledger.jsonl --api-key-env PERSONA_KEY --key-id smoke; echo "exit=$?"
 # expect: exit=0, one JSON line on stdout with "governed":true, one verifiable line in /tmp/persona-ledger.jsonl
 bun -e 'import {verifyLedgerFile} from "./src/signed-ledger.ts"; console.log(await verifyLedgerFile("/tmp/persona-ledger.jsonl"))'
 ```
+
+Still open: `governance:"full"` mode is untested under real Pi (only `"tool"` mode has a real-key run); no automated test covers the real-Pi → real-`GovernedLoop` → ledger link end-to-end, only these manual runs prove it.
 
 `env -i` matters: it reproduces the bridge's stripped child environment (no `PATH`, no `HOME`). Note that Pi's in-memory auth still falls back to `ANTHROPIC_OAUTH_TOKEN`/`ANTHROPIC_API_KEY` from the process env when no override is injected; under the bridge those are absent, and the wrapper always injects the `--api-key-env` value as a runtime override, which outranks the fallback.
 
