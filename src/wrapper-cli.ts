@@ -27,7 +27,17 @@
  * `isGoverned`/`ungovernedReason`, runtime.ts — no second governedness check lives here) ·
  * 2 usage/configuration error, nothing was run (bad argv, unreadable key, credential unset,
  * unknown model) · 3 the model turn failed (Pi threw, or the assistant stopped with
- * `error`/`aborted`) · 4 the signed ledger could not be persisted.
+ * `error`/`aborted`; under `--reply-schema`, also: the model answered but its reply does not
+ * parse as the schema or cites a grounding document it was never given — the turn ran and was
+ * paid for, so this is honestly a model-turn failure, never a usage error) · 4 the signed
+ * ledger could not be persisted.
+ *
+ * `--reply-schema deliberate|deliberate-synthesis` (exoreaction/Sunstone-Atlas#390 G3/G4) is
+ * opt-in and additive: the system prompt becomes the gateway's own `DELIBERATE_SYSTEM` scaffold
+ * around the caller's persona/grounding text, the reply is parsed as the deliberate JSON shape,
+ * `cited_docs` is checked against `--grounding-doc-ids` (and `--citation-required`), and the
+ * parsed fields join the success envelope as flat fields NEXT TO `reply`. Absent the flag, every
+ * byte of the existing behaviour is unchanged (see `wrapper-deliberate.ts`).
  *
  * The Pi driver is an injected seam ({@link PersonaTurnDriver}) for the same reason
  * `GovernedLoop` takes an injected wallet/checker and `register()` takes an injected loop: the
@@ -47,6 +57,17 @@ import { HarnessConformanceChecker } from "./harness-conformance.js";
 import { isGoverned, ungovernedReason, type TurnRecord } from "./runtime.js";
 import { createFileLedgerHook, type SignedTurnEntry } from "./signed-ledger.js";
 import { digest } from "./evidence.js";
+import {
+  checkGroundingCitations,
+  deliberateSystemPrompt,
+  DeliberateReplyError,
+  NO_GROUNDING_CONFORMANCE,
+  parseDeliberateReply,
+  REPLY_SCHEMAS,
+  type DeliberateReply,
+  type GroundingConformance,
+  type ReplySchema,
+} from "./wrapper-deliberate.js";
 
 export const EXIT_GOVERNED = 0;
 export const EXIT_UNGOVERNED = 1;
@@ -66,10 +87,18 @@ export const USAGE = `usage: pi-kcp-persona-turn --prompt <text> --cwd <abs dir>
                           [--grounding <text>] [--grounding-file <abs path>]
                           [--tools <a,b,c>] [--key-id <id>] [--api-key-env <NAME>]
                           [--timeout-ms <n>]
+                          [--reply-schema deliberate|deliberate-synthesis
+                           [--grounding-doc-ids <id,id,…>] [--citation-required]]
 
 One governed pi-kcp turn, bridge-shaped: exactly one JSON object on stdout, exit 0 only when the
 turn was governed and its signed ledger entry was persisted. Never reads stdin. Reads exactly one
-environment variable (--api-key-env, default ${DEFAULT_API_KEY_ENV}).`;
+environment variable (--api-key-env, default ${DEFAULT_API_KEY_ENV}).
+
+--reply-schema wraps the persona/grounding text in Sunstone Atlas's DELIBERATE_SYSTEM scaffold,
+requires the reply to be its JSON shape ({position, argument, cited_docs, dissent_with,
+confidence[, coverage]}), and refuses (exit 3) a reply that does not parse or that cites a doc id
+not listed in --grounding-doc-ids (bare ids; the model cites them as doc:<id>).
+--citation-required additionally refuses an empty cited_docs.`;
 
 /** Parsed argv — pure data, nothing read from disk yet. */
 export interface WrapperArgs {
@@ -86,10 +115,25 @@ export interface WrapperArgs {
   groundingFile?: string;
   tools: string[];
   timeoutMs: number;
+  /** `--reply-schema`; absent ⇒ the free-text reply contract, byte-identical to before it existed. */
+  replySchema?: ReplySchema;
+  /** `--grounding-doc-ids`, bare ids; only meaningful (and only accepted) with `--reply-schema`. */
+  groundingDocIds: string[];
+  /** `--citation-required`; only accepted with `--reply-schema` and a non-empty `--grounding-doc-ids`. */
+  citationRequired: boolean;
 }
 
 /** Thrown for anything that maps to {@link EXIT_USAGE}: nothing has run, nothing was spent. */
 export class WrapperUsageError extends Error {}
+
+/**
+ * Flags that take no value. The bridge only ever substitutes `{param}`s after a literal `--flag`,
+ * and these are never substituted — they are fixed in the argv template — so a bare flag is
+ * still inside the bridge's template rules.
+ */
+const BOOLEAN_FLAGS: Record<string, keyof WrapperArgs> = {
+  "--citation-required": "citationRequired",
+};
 
 const VALUE_FLAGS: Record<string, keyof WrapperArgs> = {
   "--prompt": "prompt",
@@ -105,6 +149,8 @@ const VALUE_FLAGS: Record<string, keyof WrapperArgs> = {
   "--grounding-file": "groundingFile",
   "--tools": "tools",
   "--timeout-ms": "timeoutMs",
+  "--reply-schema": "replySchema",
+  "--grounding-doc-ids": "groundingDocIds",
 };
 
 const REQUIRED: Array<[keyof WrapperArgs, string]> = [
@@ -123,9 +169,16 @@ const REQUIRED: Array<[keyof WrapperArgs, string]> = [
  */
 export function parseWrapperArgs(argv: readonly string[]): WrapperArgs {
   const raw: Partial<Record<keyof WrapperArgs, string>> = {};
+  const flags = new Set<keyof WrapperArgs>();
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i]!;
     if (flag === "--help" || flag === "-h") throw new WrapperUsageError(USAGE);
+    const boolKey = BOOLEAN_FLAGS[flag];
+    if (boolKey) {
+      if (flags.has(boolKey)) throw new WrapperUsageError(`${flag} given twice`);
+      flags.add(boolKey);
+      continue;
+    }
     const key = VALUE_FLAGS[flag];
     if (!key) throw new WrapperUsageError(`unknown argument: ${flag}\n\n${USAGE}`);
     const value = argv[i + 1];
@@ -158,6 +211,30 @@ export function parseWrapperArgs(argv: readonly string[]): WrapperArgs {
   }
   const apiKeyEnv = raw.apiKeyEnv ?? DEFAULT_API_KEY_ENV;
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(apiKeyEnv)) throw new WrapperUsageError(`--api-key-env is not a valid environment variable name: ${JSON.stringify(apiKeyEnv)}`);
+
+  // ── --reply-schema and its dependants. Each is meaningless without the one above it, and a
+  //    config author who wrote `--citation-required` believes citations are being enforced —
+  //    silently ignoring it would be exactly the hidden gap this feature exists to close. ──
+  let replySchema: ReplySchema | undefined;
+  if (raw.replySchema !== undefined) {
+    if (!(REPLY_SCHEMAS as readonly string[]).includes(raw.replySchema)) {
+      throw new WrapperUsageError(`--reply-schema must be one of ${REPLY_SCHEMAS.join("|")} (got ${JSON.stringify(raw.replySchema)})`);
+    }
+    replySchema = raw.replySchema as ReplySchema;
+  }
+  const groundingDocIds = (raw.groundingDocIds ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+  if (raw.groundingDocIds !== undefined && !replySchema) throw new WrapperUsageError("--grounding-doc-ids requires --reply-schema (there is no cited_docs field to check without one)");
+  for (const id of groundingDocIds) {
+    // The wrapper prefixes `doc:` itself, exactly as the gateway does with policy.grounding[].id;
+    // an already-prefixed id would become `doc:doc:<id>` and every honest citation would be
+    // refused as fabricated.
+    if (id.startsWith("doc:")) throw new WrapperUsageError(`--grounding-doc-ids takes bare ids, not ${JSON.stringify(id)} — the model cites them as doc:<id>`);
+  }
+  const citationRequired = flags.has("citationRequired");
+  if (citationRequired && !replySchema) throw new WrapperUsageError("--citation-required requires --reply-schema");
+  if (citationRequired && groundingDocIds.length === 0) {
+    throw new WrapperUsageError("--citation-required needs a non-empty --grounding-doc-ids — with nothing citable, every reply would be refused");
+  }
   return {
     prompt: raw.prompt!,
     cwd: raw.cwd!,
@@ -172,6 +249,9 @@ export function parseWrapperArgs(argv: readonly string[]): WrapperArgs {
     ...(raw.groundingFile ? { groundingFile: raw.groundingFile } : {}),
     tools: (raw.tools ?? "").split(",").map((t) => t.trim()).filter(Boolean),
     timeoutMs,
+    ...(replySchema ? { replySchema } : {}),
+    groundingDocIds,
+    citationRequired,
   };
 }
 
@@ -214,7 +294,15 @@ export interface RunDeps {
   now?: () => string;
 }
 
-/** The single stdout document on success — a flat object so playbook steps can reference its fields. */
+/**
+ * The single stdout document on success — a flat object so playbook steps can reference its fields.
+ *
+ * With `--reply-schema` the parsed deliberate fields are ADDED, flat, after the existing ones:
+ * `reply` stays the raw model text (and `replyDigest` its digest), so the pre-existing fields keep
+ * their meaning and a consumer can re-derive the parse from the bytes the model actually produced.
+ * Field names are the model's own (`cited_docs`, `dissent_with`) — the names Atlas's
+ * `DELIBERATE_JUDGMENT_OUTPUT_FIELDS` types and `steps.<id>.<field>` bindings reference.
+ */
 export interface PersonaTurnResponse {
   reply: string;
   replyDigest: string;
@@ -235,6 +323,21 @@ export interface PersonaTurnResponse {
     /** SPKI PEM the entries were signed with — what an auditor pins in `verifyLedgerFile`. */
     publicKey: string;
   };
+  /** Only with `--reply-schema`: which schema the fields below were parsed and checked against. */
+  replySchema?: ReplySchema;
+  position?: string;
+  argument?: string;
+  cited_docs?: string[];
+  dissent_with?: string[];
+  confidence?: number;
+  /** Only with `--reply-schema deliberate-synthesis`; always present there, even as `[]`. */
+  coverage?: DeliberateReply["coverage"];
+  /**
+   * Only with `--reply-schema`: the citation check's verdict — the gateway's `groundingConformance`
+   * shape (`ALLOW`/`DENY`/`N/A`). On exit 0 this is never `DENY`; it is emitted so a consumer can
+   * tell "checked and passed" (`ALLOW`) from "nothing was citable" (`N/A`), as Atlas's scorecard does.
+   */
+  groundingConformance?: GroundingConformance;
 }
 
 export interface RunOutcome {
@@ -351,6 +454,18 @@ export async function runPersonaTurn(args: WrapperArgs, deps: RunDeps): Promise<
   });
 
   // ── 3. The one model turn. ──
+  //
+  // Under --reply-schema the caller's persona + grounding play the role of the gateway's
+  // `groundingText(policy)` (charter text, then the `[doc:<id>]` blocks) and are wrapped in the
+  // SAME fixed DELIBERATE_SYSTEM scaffold — so for the same `g` the wrapper hands Pi the same
+  // system prompt the gateway hands Anthropic. Built as one systemPrompt (not split across
+  // systemPrompt/appendSystemPrompt) so the parity holds by construction here, not by Pi's join.
+  // `hasGrounding` is "were any doc ids declared", the analogue of `policy.grounding.length > 0`.
+  const hasGrounding = args.groundingDocIds.length > 0;
+  const systemPrompt = args.replySchema
+    ? deliberateSystemPrompt([persona, grounding].filter((s): s is string => Boolean(s)).join("\n\n"), hasGrounding, args.replySchema === "deliberate-synthesis")
+    : persona;
+  const appendSystemPrompt = args.replySchema ? undefined : grounding;
   let result: DriverResult;
   try {
     result = await deps.driver({
@@ -358,8 +473,8 @@ export async function runPersonaTurn(args: WrapperArgs, deps: RunDeps): Promise<
       model: args.model,
       prompt: args.prompt,
       apiKey,
-      ...(persona ? { systemPrompt: persona } : {}),
-      ...(grounding ? { appendSystemPrompt: grounding } : {}),
+      ...(systemPrompt ? { systemPrompt } : {}),
+      ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
       tools: args.tools,
       timeoutMs: args.timeoutMs,
       extension: (pi) => register(pi, { loop }),
@@ -405,6 +520,29 @@ export async function runPersonaTurn(args: WrapperArgs, deps: RunDeps): Promise<
     return fail(EXIT_LEDGER, `signed ledger not persisted: ${appended.length}/${records.length} entries written to ${args.ledgerPath}`);
   }
 
+  // ── 6. The reply contract (only under --reply-schema). Checked LAST: the turn above was
+  //       governed and is on the ledger — what is refused here is the answer, not the turn, the
+  //       same way the gateway signs an outcome:"refuse" receipt for an unparseable or
+  //       fabricated-citation reply rather than pretending the call never happened. ──
+  let deliberate: DeliberateReply | undefined;
+  let groundingConformance: GroundingConformance | undefined;
+  if (args.replySchema) {
+    try {
+      deliberate = parseDeliberateReply(result.reply, args.replySchema);
+    } catch (error) {
+      if (!(error instanceof DeliberateReplyError)) throw error;
+      // Same diagnostic the gateway keeps server-side (stderr, bounded, never on the reply
+      // object): the raw text is what makes an "unparseable" refusal diagnosable at all.
+      return fail(EXIT_MODEL, `reply does not match --reply-schema ${args.replySchema}: ${error.message} — refusing (fail-safe); rawTextHead2000=${JSON.stringify(result.reply.slice(0, 2000))}`);
+    }
+    groundingConformance = hasGrounding
+      ? checkGroundingCitations(deliberate.cited_docs, args.groundingDocIds, { required: args.citationRequired })
+      : NO_GROUNDING_CONFORMANCE;
+    if (!groundingConformance.ok) {
+      return fail(EXIT_MODEL, `grounding citation conformance ${groundingConformance.verdict}: ${groundingConformance.reason} — refusing (fail-safe); cited_docs=${JSON.stringify(deliberate.cited_docs)} provided=${JSON.stringify(args.groundingDocIds.map((id) => `doc:${id}`))}`);
+    }
+  }
+
   const response: PersonaTurnResponse = {
     reply: result.reply,
     replyDigest: digest(result.reply),
@@ -424,6 +562,20 @@ export async function runPersonaTurn(args: WrapperArgs, deps: RunDeps): Promise<
       })),
       publicKey: appended[0]!.signature.publicKey,
     },
+    // Additive and gated on --reply-schema only: absent the flag, not one key below is emitted,
+    // so the envelope stays byte-identical to before this existed.
+    ...(args.replySchema && deliberate && groundingConformance
+      ? {
+          replySchema: args.replySchema,
+          position: deliberate.position,
+          argument: deliberate.argument,
+          cited_docs: deliberate.cited_docs,
+          dissent_with: deliberate.dissent_with,
+          confidence: deliberate.confidence,
+          ...(deliberate.coverage !== undefined ? { coverage: deliberate.coverage } : {}),
+          groundingConformance,
+        }
+      : {}),
   };
   return { exitCode: EXIT_GOVERNED, stdout: JSON.stringify(response) + "\n", stderr: errLines.length ? errLines.join("\n") + "\n" : "" };
 }
