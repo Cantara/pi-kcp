@@ -1,7 +1,12 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   agentInvocationForPath,
   extractRecallQuery,
+  findAgentInvocation,
   KCP_HELP,
   formatRecallBlock,
   normalizePlanJson,
@@ -117,5 +122,85 @@ describe("memory response formatting", () => {
     expect(parseSearchResults(null)).toEqual([]);
     expect(parseSearchResults({ results: "not an array" })).toEqual([]);
     expect(formatRecallBlock("nothing", [])).toBe("");
+  });
+});
+
+describe("findAgentInvocation — local node_modules/.bin resolution", () => {
+  // findAgentInvocation's only local candidates were two hardcoded GLOBAL install paths
+  // (Homebrew, ~/.npm-global) plus a bare `which kcp-agent` — so a project that installs
+  // kcp-agent as an ordinary (possibly transitive) dependency, the way this repo's own
+  // devDependency on kcp-harness does, had no candidate that could ever match, and fell
+  // through to "not found" even with a real, working install two directories away.
+
+  // A fake that throws if called: these tests assert the local node_modules/.bin path
+  // resolves WITHOUT ever needing to shell out to `which` or invoke the agent — proving
+  // it wins on its own, not merely that it's present among other paths that also work.
+  const explodingPi = {
+    exec: async () => {
+      throw new Error("exec should not have been called — the local node_modules/.bin candidate should have resolved first");
+    },
+  } as unknown as ExtensionAPI;
+
+  const baseConfig = parseConfig({}).config;
+
+  function makeProjectWithLocalAgent(): { root: string; cleanup: () => void } {
+    const root = mkdtempSync(join(tmpdir(), "pi-kcp-agent-path-test-"));
+    const binDir = join(root, "node_modules", ".bin");
+    mkdirSync(binDir, { recursive: true });
+    const target = join(root, "node_modules", "kcp-agent-stub.js");
+    writeFileSync(target, "#!/usr/bin/env node\n// stub, never actually invoked by this test\n", { mode: 0o755 });
+    symlinkSync(target, join(binDir, "kcp-agent"));
+    return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  }
+
+  it("finds kcp-agent installed locally under node_modules/.bin, cwd == project root", async () => {
+    const { root, cleanup } = makeProjectWithLocalAgent();
+    try {
+      const invocation = await findAgentInvocation(explodingPi, root, baseConfig);
+      expect(invocation).toEqual({
+        command: join(root, "node_modules", ".bin", "kcp-agent"),
+        args: [],
+        label: join(root, "node_modules", ".bin", "kcp-agent"),
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("finds it from a nested working directory, walking up to the project root (monorepo case)", async () => {
+    const { root, cleanup } = makeProjectWithLocalAgent();
+    try {
+      const nested = join(root, "packages", "some-package", "src");
+      mkdirSync(nested, { recursive: true });
+      const invocation = await findAgentInvocation(explodingPi, nested, baseConfig);
+      expect(invocation?.command).toBe(join(root, "node_modules", ".bin", "kcp-agent"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("an explicit agentCli config still wins over a local node_modules/.bin install", async () => {
+    const { root, cleanup } = makeProjectWithLocalAgent();
+    try {
+      const configuredPath = join(root, "node_modules", "kcp-agent-stub.js");
+      const invocation = await findAgentInvocation(explodingPi, root, { ...baseConfig, agentCli: configuredPath });
+      expect(invocation?.command).toBe("node");
+      expect(invocation?.args).toEqual([configuredPath]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("falls through to undefined when nothing local, global, or on PATH resolves", async () => {
+    const noWhichPi = {
+      exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+    } as unknown as ExtensionAPI;
+    const emptyDir = mkdtempSync(join(tmpdir(), "pi-kcp-agent-path-test-empty-"));
+    try {
+      const invocation = await findAgentInvocation(noWhichPi, emptyDir, baseConfig);
+      expect(invocation).toBeUndefined();
+    } finally {
+      rmSync(emptyDir, { recursive: true, force: true });
+    }
   });
 });
