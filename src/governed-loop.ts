@@ -250,6 +250,21 @@ export class GovernedLoop {
    * the distinction is load-bearing, not cosmetic.
    */
   private turnClosed = false;
+   * Monotonic count of genuine new-prompt boundaries observed (#71/#67 race, #71-leak).
+   * Bumped only by a real {@link observeInput} (never a mid-run steer). Paired with
+   * {@link runStartGeneration} so {@link onAgentStart} and {@link endPrompt} can tell
+   * whether the run they are bracketing still belongs to the newest observed prompt, or
+   * has already been superseded by one.
+   */
+  private promptGeneration = 0;
+  /** Whether a Pi run (`agent_start` … `agent_settled`) is currently under way. */
+  private runActive = false;
+  /**
+   * The {@link promptGeneration} claimed by the outermost `agent_start` of the run
+   * currently in flight (or the most recently finished one). `undefined` before the
+   * first run ever starts.
+   */
+  private runStartGeneration: number | undefined;
 
   constructor(options: GovernedLoopOptions = {}) {
     this.checker = options.checker ?? passThroughChecker;
@@ -557,6 +572,14 @@ export class GovernedLoop {
    */
   private noteSkillSelected(event: SkillSelected): SkillSelected | undefined {
     if (event.source === "agent" && this.activeSkill?.source === "user") {
+      // Visible, not silent (#70 follow-up): the swap was refused by precedence, not by
+      // a failed gate — still worth a distinct reason so callers can tell the two apart.
+      this.hooks.onSkillRefused?.(event, "a user-forced skill is active — an agent-driven read cannot displace it", {
+        admitted: false,
+        governed: false,
+        reason: "a user-forced skill is active — an agent-driven read cannot displace it",
+        failedGates: [],
+      });
       return undefined;
     }
     const admission = this.adjudicateSkill(event);
@@ -582,8 +605,41 @@ export class GovernedLoop {
    */
   observeInput(text: string, commands: readonly SlashCommandInfo[] = []): SkillSelected | undefined {
     this.activeSkill = undefined;
+    this.promptGeneration += 1;
     const forced = detectForcedSkill(text, commands);
     return forced ? this.noteSkillSelected(forced) : undefined;
+  }
+
+  /**
+   * Mark the outermost start of a Pi run (`agent_start`) — NOT every `agent_start`: Pi
+   * re-emits it for each in-prompt retry/`continue()` too (no new `input` in between), and
+   * those must not re-enter this method (guarded by {@link runActive}).
+   *
+   * Closes a leak (#71 follow-up): if `prompt()` throws after `input` but before a run
+   * ever starts (model/auth validation, a failed `before_agent_start`), `agent_settled`
+   * never fires for it either, so {@link endPrompt} never runs — whatever
+   * {@link observeInput} set (or left over from before it) is still sitting there. A later
+   * run started with no `input` at all (e.g. `sendCustomMessage({ triggerTurn: true })`)
+   * would otherwise silently inherit it. Fix: a run that starts without having claimed a
+   * *new* {@link promptGeneration} — i.e. one already claimed by whatever last ran — has
+   * nothing of its own to inherit, so it starts clean.
+   *
+   * This is a best-effort boundary, not a perfect one: Pi exposes no event for a prompt
+   * that fails before reaching `agent_start`, so this can only detect the absence of a
+   * *new* input at the next run, not the specific failed one. A pathological case — another
+   * extension's `agent_settled` handler synchronously running a whole nested prompt to
+   * completion before our own `agent_settled` handler for the outer prompt runs — can leave
+   * one run's selection uncleared for one extra cycle; the run after that self-corrects,
+   * because it again claims (or fails to claim) the generation on its own terms.
+   */
+  onAgentStart(): void {
+    if (this.runActive) return;
+    if (this.runStartGeneration === this.promptGeneration) {
+      this.activeSkill = undefined;
+      this.tracedUnits = undefined;
+    }
+    this.runStartGeneration = this.promptGeneration;
+    this.runActive = true;
   }
 
   /**
@@ -592,10 +648,24 @@ export class GovernedLoop {
    * (fired once the run has *fully* settled — no automatic retry, compaction, or queued
    * continuation will run; unlike `agent_end`, nothing after this reuses prompt state
    * without a new `input`, so this is the only correct place to clear it — see #71).
+   *
+   * Race guard (#71 follow-up): `_emitAgentSettled` drops Pi's own run flag BEFORE it
+   * emits `agent_settled` to extensions, so an earlier-registered extension's handler for
+   * THIS SAME event can start a brand-new prompt (`input` → {@link observeInput}, which
+   * bumps {@link promptGeneration} and installs the new prompt's own skill) before our
+   * handler gets to run. Only clear when {@link promptGeneration} still matches the
+   * generation the ending run actually claimed at {@link onAgentStart} — a mismatch means
+   * a newer prompt already superseded it, and wiping now would delete that prompt's state
+   * instead of this one's. `undefined` (Pi's real order, or a caller driving the loop
+   * directly without ever calling {@link onAgentStart}) means no generation was ever
+   * claimed, so there is nothing to guard against — clear unconditionally, as before.
    */
   endPrompt(): void {
-    this.activeSkill = undefined;
-    this.tracedUnits = undefined;
+    if (this.runStartGeneration === undefined || this.runStartGeneration === this.promptGeneration) {
+      this.activeSkill = undefined;
+      this.tracedUnits = undefined;
+    }
+    this.runActive = false;
   }
 
   /**
