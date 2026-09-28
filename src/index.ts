@@ -863,6 +863,17 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     return config;
   };
 
+  // The outermost start of a Pi run (#71 follow-up leak). Pi re-emits `agent_start` for
+  // every in-prompt retry/`continue()` too — `GovernedLoop.onAgentStart()` itself ignores
+  // every call after the first for a run in flight, so this is safe to wire unconditionally.
+  // Closes: a prompt that fails before ever starting a run (model/auth validation, a
+  // failed `before_agent_start`) never reaches `agent_settled` either, so a later run
+  // with no `input` of its own (e.g. `sendCustomMessage({ triggerTurn: true })`) would
+  // otherwise inherit whatever `input` last set.
+  pi.on("agent_start", async () => {
+    loop.onAgentStart();
+  });
+
   // Mint a fresh per-turn correlation id (#29) at the turn boundary.
   pi.on("turn_start", async (event, ctx) => {
     await refreshMode(ctx.cwd);
