@@ -242,6 +242,18 @@ export class GovernedLoop {
    * first run ever starts.
    */
   private runStartGeneration: number | undefined;
+  /**
+   * The {@link promptGeneration} for which `before_agent_start` has actually run (#71
+   * early-failure leak). Pi's real order for a genuine prompt is `input` →
+   * `before_agent_start` → `agent_start`; `input` alone only *observes* a prompt, it does
+   * not confirm one will ever run — `prompt()` can still throw before `before_agent_start`
+   * (model/auth validation) or during it. A `triggerTurn` run skips `input` and
+   * `before_agent_start` entirely and goes straight to `agent_start`
+   * (`_runAgentPrompt(appMessage)`, agent-session.js:1069), so its absence is the
+   * discriminator {@link onAgentStart} needs: a run only "owns" the latest observed input
+   * if `before_agent_start` actually ran for it.
+   */
+  private consumedGeneration: number | undefined;
 
   constructor(options: GovernedLoopOptions = {}) {
     this.checker = options.checker ?? passThroughChecker;
@@ -476,30 +488,53 @@ export class GovernedLoop {
   }
 
   /**
+   * Mark that `before_agent_start` has actually run for the latest observed input (#71
+   * early-failure leak). `input` alone only *observes* a prompt — it does not confirm one
+   * will ever run: `prompt()` can still throw before `before_agent_start` at all (model/auth
+   * validation), or return early (`handled`), with no run and no `agent_settled` to follow.
+   * `before_agent_start` running is the earliest point at which Pi has committed to
+   * actually starting a run for this input, which is why {@link onAgentStart} uses it
+   * (rather than {@link observeInput} itself) as the "this run owns the latest input"
+   * discriminator.
+   */
+  onBeforeAgentStart(): void {
+    this.consumedGeneration = this.promptGeneration;
+  }
+
+  /**
    * Mark the outermost start of a Pi run (`agent_start`) — NOT every `agent_start`: Pi
    * re-emits it for each in-prompt retry/`continue()` too (no new `input` in between), and
    * those must not re-enter this method (guarded by {@link runActive}).
    *
    * Closes a leak (#71 follow-up): if `prompt()` throws after `input` but before a run
-   * ever starts (model/auth validation, a failed `before_agent_start`), `agent_settled`
-   * never fires for it either, so {@link endPrompt} never runs — whatever
-   * {@link observeInput} set (or left over from before it) is still sitting there. A later
-   * run started with no `input` at all (e.g. `sendCustomMessage({ triggerTurn: true })`)
-   * would otherwise silently inherit it. Fix: a run that starts without having claimed a
-   * *new* {@link promptGeneration} — i.e. one already claimed by whatever last ran — has
-   * nothing of its own to inherit, so it starts clean.
+   * ever starts (model/auth validation, or `handled`), `agent_settled` never fires for it
+   * either, so {@link endPrompt} never runs — whatever {@link observeInput} set (or left
+   * over from before it) is still sitting there. A later run started with no `input` at
+   * all (e.g. `sendCustomMessage({ triggerTurn: true })`, which skips `input` and
+   * `before_agent_start` entirely and goes straight to `agent_start`) would otherwise
+   * silently inherit it. Fix: clear unless {@link onBeforeAgentStart} actually ran for the
+   * CURRENT {@link promptGeneration} — a run that starts without that confirmation has
+   * nothing of its own to inherit.
    *
-   * This is a best-effort boundary, not a perfect one: Pi exposes no event for a prompt
-   * that fails before reaching `agent_start`, so this can only detect the absence of a
-   * *new* input at the next run, not the specific failed one. A pathological case — another
-   * extension's `agent_settled` handler synchronously running a whole nested prompt to
-   * completion before our own `agent_settled` handler for the outer prompt runs — can leave
-   * one run's selection uncleared for one extra cycle; the run after that self-corrects,
-   * because it again claims (or fails to claim) the generation on its own terms.
+   * Residual gap, not fully closed by this: if `before_agent_start` itself runs (marking
+   * this generation consumed) but a *later* handler for that same event throws, `prompt()`
+   * still never starts a run — and this method has no way to tell that apart from a
+   * genuine run for the same, already-consumed generation. Pi exposes no event for that
+   * narrower failure; the two confirmed leak causes above (pre-`before_agent_start`
+   * failure, and no `input` at all) are what this closes.
+   *
+   * Second, independent guard: {@link runStartGeneration} matching the current
+   * {@link promptGeneration} means some earlier run already claimed this exact generation
+   * (and has since settled — {@link endPrompt} cleared then). A run starting again with
+   * that same generation has had no `input` of its own since, however
+   * {@link consumedGeneration} looks (it does not get invalidated by a settle, only ever
+   * advanced by the next confirmed `before_agent_start`) — so this also clears.
    */
   onAgentStart(): void {
     if (this.runActive) return;
-    if (this.runStartGeneration === this.promptGeneration) {
+    const noConfirmedInput = this.consumedGeneration !== this.promptGeneration;
+    const alreadyClaimed = this.runStartGeneration === this.promptGeneration;
+    if (noConfirmedInput || alreadyClaimed) {
       this.activeSkill = undefined;
       this.tracedUnits = undefined;
     }

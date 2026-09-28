@@ -416,8 +416,16 @@ describe("SKILL.md-read precedence and no-swap-on-block (ref #70)", () => {
     const loop = new GovernedLoop({ checker: new HarnessConformanceChecker({ requireActiveSkill: true }) });
     register(pi.asApi(), { loop });
 
-    // No `/skill:` prefix — nothing forced, nothing active yet.
+    // No `/skill:` prefix — nothing forced, nothing active yet. Pi's real order —
+    // `before_agent_start` and `agent_start` both included — so `onAgentStart`'s
+    // consumed-generation check does not itself clear anything here.
     await pi.fire("input", { text: "run the deploy checklist", source: "rpc" }, dir);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "run the deploy checklist", systemPrompt: "you are pi", systemPromptOptions: {} },
+      dir,
+    );
+    await pi.fire("agent_start", {}, dir);
     await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
     expect(loop.currentSkill()).toBeUndefined();
 
@@ -525,12 +533,15 @@ describe("prompt-generation tracking across agent_start/agent_settled (#71 follo
     // prompt (whose `input` we observe) before OUR `agent_settled` handler gets to run.
     const loop = new GovernedLoop();
     loop.observeInput("/skill:deploy go", commands);
+    loop.onBeforeAgentStart();
     loop.onAgentStart(); // run A starts, claiming this generation
     expect(loop.currentSkill()?.skillName).toBe("deploy");
 
-    // Before run A's own `agent_settled` handler executes, prompt B's `input` is
-    // observed — a genuinely newer generation with its own selection.
+    // Before run A's own `agent_settled` handler executes, prompt B's `input` and
+    // `before_agent_start` both run — a genuinely newer, confirmed generation with its
+    // own selection.
     loop.observeInput("/skill:narrow go", commands);
+    loop.onBeforeAgentStart();
     expect(loop.currentSkill()?.skillName).toBe("narrow");
 
     // Run A's (delayed) settle now runs. It must not wipe B's just-installed skill.
@@ -545,6 +556,7 @@ describe("prompt-generation tracking across agent_start/agent_settled (#71 follo
     // SKILL.md read from a tool call still in flight when the prompt settled).
     const loop = new GovernedLoop();
     loop.observeInput("/skill:deploy go", commands);
+    loop.onBeforeAgentStart();
     loop.onAgentStart();
     loop.endPrompt();
     expect(loop.currentSkill()).toBeUndefined();
@@ -552,9 +564,58 @@ describe("prompt-generation tracking across agent_start/agent_settled (#71 follo
     await loop.evaluateToolCall("read", { path: "skills/deploy/SKILL.md" }, { cwd: "/repo" });
     expect(loop.currentSkill()?.skillName).toBe("deploy");
 
-    // The next run to actually start has no `input` since the last real settle — it
-    // must not inherit this stray, late-arriving selection.
+    // The next run to actually start has no `input` (and so no `before_agent_start`)
+    // since the last real settle — it must not inherit this stray, late-arriving
+    // selection.
     loop.onAgentStart();
     expect(loop.currentSkill()).toBeUndefined();
+  });
+
+  it("through register(): a prompt that fails before before_agent_start/agent_start does not leak into a later triggerTurn run", async () => {
+    // The confirmed early-failure leak: `prompt()` can throw after `input` but before
+    // `before_agent_start` ever fires (model/auth validation) — or return early on
+    // `handled` — with no run, and so no `agent_settled`, to follow. A later run driven
+    // with no `input` of its own (`sendCustomMessage({ triggerTurn: true })` →
+    // `agent_start`/`turn_start` directly, agent-session.js:1069) must not inherit the
+    // forced skill that `input` alone observed.
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    // `input` fires and IS observed (a real Pi behaviour: `input` runs before the
+    // validation that can still make `prompt()` throw) — but nothing downstream of it
+    // ever fires: no `before_agent_start`, no `agent_start` for this attempt.
+    await pi.fire("input", { text: "/skill:deploy go", source: "rpc" }, dir);
+
+    // A later, unrelated run with no `input` of its own.
+    await pi.fire("agent_start", {}, dir);
+    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+    const decision = await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(decision.block).toBe(true);
+    expect(decision.reason).toContain(STRICT_REFUSAL);
+  });
+
+  it("through register(): a prompt that reaches before_agent_start keeps its skill through agent_start", async () => {
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    await pi.fire("input", { text: "/skill:deploy go", source: "rpc" }, dir);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "/skill:deploy go", systemPrompt: "you are pi", systemPromptOptions: {} },
+      dir,
+    );
+    await pi.fire("agent_start", {}, dir);
+    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+
+    const decision = await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(decision).toBeUndefined();
   });
 });
