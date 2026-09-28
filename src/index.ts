@@ -385,6 +385,19 @@ async function loadConfig(cwd: string): Promise<LoadedConfig> {
   }
 }
 
+/**
+ * The turn boundary's one piece of real decision logic — factored out so `turn_start` and
+ * `before_agent_start` (see governed-loop.ts's {@link GovernedLoop.openTurnIfNeeded} for why
+ * both need it independently) can never quietly disagree about what a turn is governed under.
+ */
+async function resolveTurnMode(
+  cwd: string,
+  governOverride: GovernanceMode | undefined,
+): Promise<{ mode: GovernanceMode; config: KcpConfig }> {
+  const { config } = await loadConfig(cwd);
+  return { mode: governOverride ?? (config.enabled ? config.governance : "off"), config };
+}
+
 async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -888,10 +901,14 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   let turnConfig: KcpConfig = defaultConfig;
 
   // Mint a fresh per-turn correlation id (#29) at the turn boundary.
+  //
+  // NOT reliably the first event of a turn — see `before_agent_start` immediately below,
+  // which races ahead of this on Pi 0.80.6 and may already have opened the turn this
+  // handler would otherwise open again, discarding `plan`'s just-recorded decision.
   pi.on("turn_start", async (event, ctx) => {
-    const { config } = await loadConfig(ctx.cwd);
-    mode = governOverride ?? (config.enabled ? config.governance : "off");
-    loop.beginTurn(event.turnIndex, mode);
+    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
+    mode = resolvedMode;
+    loop.openRoundFromTurnStart(event.turnIndex, mode);
     posture = config.gateFailurePosture;
     turnConfig = config;
     // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
@@ -899,6 +916,57 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     if (builtInChecker && options.requireActiveSkill === undefined) {
       builtInChecker.requireActiveSkill = config.requireActiveSkill;
     }
+  });
+
+  // plan — the prompt is known and Pi has already assembled what it loaded, so the stage can
+  // inspect that rather than re-discovering resources. Lives here, next to `turn_start`, not
+  // in `registerGovernedCycle` below with the other five stages: unlike every other governed-
+  // cycle event, `before_agent_start` is dispatched by Pi from a direct call inside `prompt()`,
+  // on a genuinely different path than the generic extension-event pipeline `turn_start` (and
+  // everything below) goes through — confirmed by tracing real timestamps against Pi 0.80.6,
+  // `before_agent_start` fires BEFORE `turn_start` has run. It cannot trust `mode`/`turnConfig`
+  // (set by `turn_start`) or assume `loop`'s ledger is already scoped to this turn — so unlike
+  // every other stage here, it resolves both independently and opens the round itself if
+  // `turn_start` hasn't already (see {@link GovernedLoop.openRoundFromTurnStart}'s doc for the
+  // full, order-agnostic mechanism this and `turn_start` share).
+  pi.on("before_agent_start", async (event, ctx) => {
+    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
+    if (resolvedMode !== "full") return undefined;
+    // Keep the shared turn state current for anything that fires in the (short) window
+    // before `turn_start` itself runs and overwrites these with the same values.
+    mode = resolvedMode;
+    turnConfig = config;
+    posture = config.gateFailurePosture;
+    loop.openRoundFromBeforeAgentStart(resolvedMode);
+
+    await loop.stage("plan", async () => {
+      const detail: Record<string, unknown> = {
+        promptBytes: Buffer.byteLength(event.prompt, "utf8"),
+        systemPromptBytes: Buffer.byteLength(event.systemPrompt, "utf8"),
+        systemPromptDigest: digest(event.systemPrompt),
+        ...(loop.currentSkill() ? { skill: loop.currentSkill()?.skillName } : {}),
+      };
+
+      // Procedural governance (#28): adjudicate declared units against the planner's gates
+      // now, so skill selection later in the turn has a verdict to consult — and so a skill
+      // already forced at `input` can still be revoked before it shapes anything.
+      const trace = await runSkillTrace(pi, ctx.cwd, event.prompt, config, loop.currentCorrelationId());
+      if (trace === undefined) {
+        return { detail: { ...detail, gated: false } };
+      }
+
+      const units = parseTrace(trace);
+      const revoked = loop.setTracedUnits(units);
+      return {
+        detail: {
+          ...detail,
+          gated: true,
+          units: units.length,
+          ...(revoked ? { revokedSkill: revoked.skillName } : {}),
+        },
+      };
+    });
+    return undefined;
   });
 
   pi.on("input", async (event, ctx) => {
@@ -956,12 +1024,13 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     return decision.block ? { block: true, reason: decision.reason } : undefined;
   });
 
-  registerGovernedCycle(pi, loop, () => mode, () => turnConfig);
+  registerGovernedCycle(pi, loop, () => mode);
 }
 
 /**
- * The governed cycle across Pi's lifecycle (#27). Eight events, seven stages, one decision
- * record per stage per turn.
+ * The rest of the governed cycle across Pi's lifecycle (#27) — six events, six stages
+ * (`plan`/`before_agent_start` lives with `turn_start` above instead; see its own comment
+ * there for why), one decision record per stage per turn.
  *
  * `before_provider_request` is deliberately not used: its payload and result are both
  * `unknown`, an untyped escape hatch. Every stage below anchors on a typed contract.
@@ -971,51 +1040,11 @@ function registerGovernedCycle(
   pi: ExtensionAPI,
   loop: GovernedLoop,
   mode: () => GovernanceMode,
-  turnConfig: () => KcpConfig,
 ): void {
-  // The five non-tool stages belong to `full` only. `tool` mode is the governance
+  // The four non-tool stages belong to `full` only. `tool` mode is the governance
   // boundary without the per-turn planner invocation.
   const full = (): boolean => mode() === "full";
   const anyCycle = (): boolean => mode() !== "off";
-  // plan — the prompt is known and Pi has already assembled what it loaded, so the stage
-  // can inspect that rather than re-discovering resources.
-  pi.on("before_agent_start", async (event, ctx) => {
-    if (!full()) return undefined;
-    await loop.stage("plan", async () => {
-      const detail: Record<string, unknown> = {
-        promptBytes: Buffer.byteLength(event.prompt, "utf8"),
-        systemPromptBytes: Buffer.byteLength(event.systemPrompt, "utf8"),
-        systemPromptDigest: digest(event.systemPrompt),
-        ...(loop.currentSkill() ? { skill: loop.currentSkill()?.skillName } : {}),
-      };
-
-      // Procedural governance (#28): adjudicate declared units against the planner's gates
-      // now, so skill selection later in the turn has a verdict to consult — and so a skill
-      // already forced at `input` can still be revoked before it shapes anything.
-      const trace = await runSkillTrace(
-        pi,
-        ctx.cwd,
-        event.prompt,
-        turnConfig(),
-        loop.currentCorrelationId(),
-      );
-      if (trace === undefined) {
-        return { detail: { ...detail, gated: false } };
-      }
-
-      const units = parseTrace(trace);
-      const revoked = loop.setTracedUnits(units);
-      return {
-        detail: {
-          ...detail,
-          gated: true,
-          units: units.length,
-          ...(revoked ? { revokedSkill: revoked.skillName } : {}),
-        },
-      };
-    });
-    return undefined;
-  });
 
   // load — the context assembly point. Phase 1 records what was assembled; injection of
   // planned units lands with the evidence-integrity work (Phase 3).
@@ -1029,12 +1058,19 @@ function registerGovernedCycle(
 
   // synthesize is the provider's, and ground checks what it returned. Both are known at
   // agent_end: the messages are the evidence that synthesis happened at all.
+  //
+  // Uses `recordLateStage`, not `stage`: Pi 0.80.6 fires `agent_end` AFTER `turn_end` (traced
+  // against real timestamps — see `openTurnIfNeeded`'s and `recordLateStage`'s docs in
+  // governed-loop.ts), so by the time this handler runs, `finishTurn` has usually already
+  // closed the turn these stages describe and pushed it to history. `mode()`/`full()` are
+  // safe to trust here unlike in `before_agent_start`: `agent_end` firing after `turn_end`
+  // means `turn_start` has definitely already run by now.
   pi.on("agent_end", async (event) => {
     if (!full()) return undefined;
-    await loop.stage("synthesize", async () => ({
+    await loop.recordLateStage("synthesize", async () => ({
       detail: { owner: "provider", messages: event.messages.length },
     }));
-    await loop.stage("ground", async () => ({
+    await loop.recordLateStage("ground", async () => ({
       detail: { messages: event.messages.length },
     }));
     return undefined;
