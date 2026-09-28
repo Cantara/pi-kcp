@@ -3,7 +3,10 @@
  *
  * A small orchestration unit that:
  *   - mints/holds a per-turn correlation id (W3C traceparent, #29),
- *   - observes skill selection (#28) and remembers the active skill for the turn,
+ *   - observes skill selection (#28) and remembers the active skill for the PROMPT
+ *     (`input` … `agent_settled`), not just the Pi turn/round it was selected in (#67, #71),
+ *   - checks a SKILL.md read against the skill already in force before letting it swap in,
+ *     with a user-forced selection taking precedence over an agent-driven one (#70),
  *   - evaluates each `tool_call` against an injectable {@link ConformanceChecker} and
  *     blocks non-conformant calls before they execute,
  *   - composes recall → plan → emit events → publish, threading the correlation id.
@@ -186,20 +189,25 @@ export class GovernedLoop {
   private readonly sessionId: string;
   private sequence = 0;
   private turn: TurnContext;
-  private activeSkill: SkillSelected | undefined;
   /**
-   * The skill selection in force for the current user prompt, remembered across turn
-   * boundaries — whether user-forced (`/skill:<name>`) or agent-driven (a `SKILL.md`
-   * read). Pi emits `input` BEFORE the first `turn_start`, and `turn_start` fires again on
-   * every tool round — so a selection that lived only in {@link activeSkill} was wiped by
-   * {@link beginTurn} before the next round's `tool_call` could ever see it (the
-   * `/skill:` forcing feature was unreachable for any RPC-driven client, and an
-   * agent-driven selection only ever governed the round it was read in — #28/scope
-   * escape). {@link beginTurn} re-selects this after its reset; the next user `input`
-   * replaces or clears it (`observeInput`), and a planner-gate revocation via
-   * {@link setTracedUnits} ends it early, whichever source it came from.
+   * The skill selection in force for the current PROMPT (`input` … `agent_settled`), not
+   * the current Pi turn — whether user-forced (`/skill:<name>`) or agent-driven (a
+   * `SKILL.md` read).
+   *
+   * Precedence: a user-forced selection holds until a planner-gate revocation
+   * ({@link setTracedUnits}) or the prompt ends ({@link endPrompt}); an agent-driven read
+   * only fills this slot when no user force is already in effect (#70 — an agent must not
+   * silently displace a deliberate `/skill:` choice; see {@link noteSkillSelected}).
+   *
+   * {@link beginTurn} does NOT touch this — a Pi turn is one LLM round, and `turn_start`
+   * fires again for every round of the same prompt (retries and `continue()` included, via
+   * `agent_end` with no new `input` — see docs/extensions.md's agent lifecycle). The
+   * genuine boundaries are `input` (a real new prompt clears/replaces it —
+   * {@link observeInput}, skipped for a mid-run steer/follow-up) and `agent_settled` (the
+   * prompt is truly over — {@link endPrompt}). #67/#71 are two turn/run-scoped stand-ins
+   * for this same prompt boundary that predate this field's current lifetime.
    */
-  private persistentSkill: SkillSelected | undefined;
+  private activeSkill: SkillSelected | undefined;
   private ledger: TurnLedger;
   /** Input digests of tool calls approved this turn, keyed by Pi's toolCallId. */
   private approvals = new Map<string, string>();
@@ -211,7 +219,11 @@ export class GovernedLoop {
   private prohibitedDigests = new Set<string>();
   /** Recent completed turn records, oldest first. Bounded — this is a window, not a store. */
   private history: TurnRecord[] = [];
-  /** The planner's traced units for this turn, when the plan stage produced them. */
+  /**
+   * The planner's traced units for the current PROMPT (#69) — set once at the plan stage
+   * (`before_agent_start`), not cleared per turn, and consulted by every selection made
+   * anywhere in the prompt, in whatever round. Cleared at {@link endPrompt}.
+   */
   private tracedUnits: TracedUnit[] | undefined;
   /** How much of the cycle this turn is accountable for. */
   private mode: GovernanceMode = "full";
@@ -257,22 +269,19 @@ export class GovernedLoop {
   }
 
   /**
-   * Start a new turn: mint a fresh correlation id, clear the skill, open a ledger scoped to
-   * what `mode` is accountable for.
+   * Start a new Pi turn (one LLM round): mint a fresh correlation id and open a ledger
+   * scoped to what `mode` is accountable for. Resets only ROUND artifacts — the
+   * correlation id, the ledger, this round's approvals and prohibited-input record.
    *
-   * Both a *user-forced* and an *agent-driven* selection are per-prompt, not per-round:
-   * `input` fires before the first `turn_start`, and `turn_start` fires again on every
-   * tool round — so clearing {@link activeSkill} here without restoring it would wipe a
-   * forced selection between detection and the first `tool_call` (with `requireActiveSkill`
-   * that turned every forced-skill prompt into a strict-mode refusal), and would leave an
-   * agent-driven selection governing only the round its `SKILL.md` read happened in (the
-   * scope it declared going unenforced for every later round of the same prompt). Either
-   * kind is re-selected here, after the reset — and each turn's plan stage can still
-   * refuse or revoke it via {@link setTracedUnits}.
+   * Does NOT touch {@link activeSkill} or {@link tracedUnits}: both are prompt-scoped, and
+   * `turn_start` is not a prompt boundary — it fires again for every round of the same
+   * prompt, including a retry or `continue()` after `agent_end` with no new `input` in
+   * between (#71). Clearing and re-selecting them here was the #67/#71 workaround; the
+   * actual prompt boundaries are `input` ({@link observeInput}) and `agent_settled`
+   * ({@link endPrompt}).
    */
   beginTurn(turnIndex?: number, mode: GovernanceMode = "full"): TurnContext {
     this.turn = mintTraceparent(turnIndex);
-    this.activeSkill = undefined;
     this.mode = mode;
     this.turnClosed = false;
     this.ledger = new TurnLedger({
@@ -282,10 +291,6 @@ export class GovernedLoop {
     });
     this.approvals.clear();
     this.prohibitedDigests.clear();
-    this.tracedUnits = undefined;
-    // Re-select the persisted skill for the new turn (the trace was just cleared, so
-    // admission defers to this turn's plan stage — gating stays per-turn, not skipped).
-    if (this.persistentSkill) this.noteSkillSelected(this.persistentSkill);
     return this.turn;
   }
 
@@ -501,15 +506,18 @@ export class GovernedLoop {
     return this.turn.correlationId;
   }
 
-  /** The skill currently active for this turn, if any. */
+  /** The skill currently active for this prompt, if any. */
   currentSkill(): SkillSelected | undefined {
     return this.activeSkill;
   }
 
   /**
-   * Install the planner's traced units for this turn and re-adjudicate whatever skill is
-   * already active. A forced skill is selected at `input`, before the plan stage runs — so
-   * the verdict can arrive after the selection, and must be able to revoke it.
+   * Install the planner's traced units for the current PROMPT (#69) and re-adjudicate
+   * whatever skill is already active. A forced skill is selected at `input`, before the
+   * plan stage (`before_agent_start`) runs — so the verdict can arrive after the
+   * selection, and must be able to revoke it. Once set, the trace is consulted by every
+   * selection anywhere in the prompt (mid-prompt agent reads included), not just the round
+   * it was produced in.
    *
    * Returns the skill that was revoked, if any.
    */
@@ -521,42 +529,42 @@ export class GovernedLoop {
     const admission = this.adjudicateSkill(active);
     if (admission.admitted) return undefined;
 
+    // A revoked selection is ended for the rest of the prompt, not resurrected next
+    // turn — there is no re-selection at the turn boundary any more to re-arm it.
     this.activeSkill = undefined;
-    // A revoked selection is ended, not resurrected, whichever source it came from:
-    // without this, beginTurn's re-selection would re-arm it every turn and the gate
-    // would refuse it again every turn — a refusal loop instead of a decision.
-    if (this.persistentSkill === active) this.persistentSkill = undefined;
     this.hooks.onSkillRefused?.(active, admission.reason, admission);
     return active;
   }
 
-  /** The admission verdict for a skill against this turn's traced units. */
+  /** The admission verdict for a skill against this prompt's traced units. */
   adjudicateSkill(skill: SkillSelected): SkillAdmission {
-    // No trace means the plan stage did not run, not that everything is refused. Gating is
-    // opt-in; a missing verdict must not become a silent denial.
+    // No trace means the plan stage did not run this prompt, not that everything is
+    // refused. Gating is opt-in; a missing verdict must not become a silent denial.
     if (!this.tracedUnits) {
-      return { admitted: true, governed: false, reason: "no planner trace for this turn", failedGates: [] };
+      return { admitted: true, governed: false, reason: "no planner trace for this prompt", failedGates: [] };
     }
     return admitSkill(findTracedUnit(this.tracedUnits, skill), skill);
   }
 
   /**
-   * Record a skill selection and emit it — unless the planner's gates refuse it, in which
-   * case it never becomes active and the written reason is emitted instead (#28).
+   * Record a skill selection and emit it — unless precedence or the planner's gates refuse
+   * it, in which case it never becomes active (#28).
    *
-   * On admission this also becomes {@link persistentSkill}, so it survives the next
-   * {@link beginTurn} regardless of source — an agent-driven selection persists across
-   * tool rounds exactly like a user-forced one, until `observeInput` or
-   * {@link setTracedUnits} ends it.
+   * Precedence (#70): a user-forced selection (`source: "user"`) always takes the slot. An
+   * agent-driven selection (`source: "agent"`, a `SKILL.md` read) fills the slot only when
+   * no user force is already active — it must not silently displace a deliberate
+   * `/skill:` choice. Whichever source wins, it then still needs the planner's admission.
    */
   private noteSkillSelected(event: SkillSelected): SkillSelected | undefined {
+    if (event.source === "agent" && this.activeSkill?.source === "user") {
+      return undefined;
+    }
     const admission = this.adjudicateSkill(event);
     if (!admission.admitted) {
       this.hooks.onSkillRefused?.(event, admission.reason, admission);
       return undefined;
     }
     this.activeSkill = event;
-    this.persistentSkill = event;
     this.hooks.onSkillSelected?.(event);
     return event;
   }
@@ -565,41 +573,40 @@ export class GovernedLoop {
    * Observe a user input line for a `/skill:<name>` forced-skill selection.
    * Returns the SkillSelected when detected (also emitted via hooks).
    *
-   * Each prompt stands alone: a new input ends whatever {@link persistentSkill} carried
-   * over from the previous prompt — forced or agent-driven — and an input without a
-   * `/skill:` prefix leaves none in force. The (re-)selected skill, forced or not, governs
-   * every turn of the prompt it was issued for, and no further.
+   * Each genuine new prompt stands alone: a new input ends whatever {@link activeSkill}
+   * carried over from the previous prompt — forced or agent-driven — and an input without
+   * a `/skill:` prefix leaves none in force. Callers must only invoke this for a real
+   * prompt boundary, not a mid-run steer/follow-up (Pi's `InputEvent.streamingBehavior`
+   * distinguishes them — see `src/index.ts`'s `input` handler); this method itself always
+   * resets, so calling it for a steer would wrongly end an in-force selection mid-prompt.
    */
   observeInput(text: string, commands: readonly SlashCommandInfo[] = []): SkillSelected | undefined {
-    this.persistentSkill = undefined;
+    this.activeSkill = undefined;
     const forced = detectForcedSkill(text, commands);
     return forced ? this.noteSkillSelected(forced) : undefined;
   }
 
   /**
-   * End the prompt: clear whatever {@link persistentSkill} carried across this prompt's
-   * tool rounds, forced or agent-driven. Pairs with Pi's `agent_end` (fired once per agent
-   * loop, i.e. once per prompt, however many `turn_start` rounds it took).
-   *
-   * `observeInput` only runs for non-`"extension"` input sources (`src/index.ts`'s
-   * `input` handler returns early for `source === "extension"` before calling it) — an
-   * extension-driven prompt (Pi's `sendUserMessage`) never reaches `observeInput`, so
-   * without this a skill selected in one prompt would leak into the next extension-driven
-   * one and, with `requireActiveSkill`, silently satisfy strict mode for it. Calling this
-   * unconditionally at `agent_end` closes that gap for both selection sources — it does
-   * not change within-prompt persistence (still governed by {@link beginTurn} and
-   * {@link setTracedUnits}).
+   * End the prompt: clear whatever {@link activeSkill} and {@link tracedUnits} carried
+   * across this prompt's turns, forced or agent-driven. Pairs with Pi's `agent_settled`
+   * (fired once the run has *fully* settled — no automatic retry, compaction, or queued
+   * continuation will run; unlike `agent_end`, nothing after this reuses prompt state
+   * without a new `input`, so this is the only correct place to clear it — see #71).
    */
   endPrompt(): void {
-    this.persistentSkill = undefined;
+    this.activeSkill = undefined;
+    this.tracedUnits = undefined;
   }
 
   /**
    * Evaluate a tool call at the governance boundary.
-   *  - detects agent skill loads (read of SKILL.md) and records them,
-   *  - builds an {@link ObservedAction} stamped with the turn correlation id + skill context,
-   *  - runs the injected conformance checker,
-   *  - returns a block decision when the checker deems the action non-conformant.
+   *  - builds an {@link ObservedAction} against whatever skill is ALREADY in force,
+   *    stamped with the turn correlation id + skill context,
+   *  - runs the injected conformance checker against that action,
+   *  - returns a block decision when the checker deems the action non-conformant,
+   *  - only once the call is conformant does a detected agent skill load (read of
+   *    SKILL.md) take effect (#70): the read is judged by the scope it was issued under,
+   *    and a blocked read swaps nothing.
    */
   async evaluateToolCall(
     toolName: string,
@@ -608,7 +615,6 @@ export class GovernedLoop {
     commands: readonly SlashCommandInfo[] = [],
   ): Promise<GovernanceDecision> {
     const skillLoad = detectAgentSkillLoad(toolName, input, commands);
-    if (skillLoad) this.noteSkillSelected(skillLoad);
 
     // A direct buy is a tool call carrying `{vendor, amount, currency}`. Attaching the
     // purchase facet makes the (purchase-aware) conformance checker adjudicate it against the
@@ -631,10 +637,15 @@ export class GovernedLoop {
         this.prohibitedDigests.add(digest(input));
         this.hooks.onProhibitedAttempt?.(action, verdict.prohibited);
       }
-      // A non-conformant purchase is blocked here — the wallet is never reached.
+      // A non-conformant purchase is blocked here — the wallet is never reached. A
+      // non-conformant SKILL.md read is blocked here too, and never becomes a selection.
       this.hooks.onBlocked?.(action, verdict.reason);
       return { block: true, reason: verdict.reason, ...(verdict.prohibited ? { prohibited: verdict.prohibited } : {}) };
     }
+
+    // The read was conformant under whatever skill was already active — now it can take
+    // effect as a selection (subject to precedence + planner admission in noteSkillSelected).
+    if (skillLoad) this.noteSkillSelected(skillLoad);
 
     // Conformant buy → authorize with the wallet and settle via the executor, then emit the
     // signed receipt + `onSettled`. Non-purchase actions just pass.

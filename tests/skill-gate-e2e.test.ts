@@ -97,9 +97,20 @@ function wire() {
   return { pi, loop, refused };
 }
 
-/** turn_start → input (forces a skill) → before_agent_start (the plan stage gates it). */
+/**
+ * Pi's real order: `input` (forces a skill) → `before_agent_start` (the plan stage gates
+ * it) → `turn_start` for the first round (not fired here — see below). Firing `turn_start`
+ * FIRST, as this helper used to, hid the fact that `beginTurn` cleared
+ * `tracedUnits`/`activeSkill` before either had ever been set (ref #69).
+ *
+ * Deliberately stops at `before_agent_start`: the plan stage's ledger entry is recorded
+ * against the ledger current at that moment, and a following `turn_start` immediately
+ * replaces it with a fresh one for its round (`beginTurn` resets round artifacts —
+ * ledger included — per the target design in #71's follow-up review). Tests that need a
+ * `tool_call` after this fire `turn_start` themselves, after making any plan-stage/ledger
+ * assertions they need.
+ */
 async function upToPlan(pi: FakePi): Promise<void> {
-  await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
   await pi.fire("input", { text: "/skill:deploy ship it", source: "user" }, dir);
   await pi.fire(
     "before_agent_start",
@@ -138,7 +149,6 @@ describe("the plan stage gates skills through the planner", () => {
       { gate: "temporal", passed: false, detail: "valid_until 2026-01-01 has passed" },
     ]);
 
-    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
     await pi.fire("input", { text: "/skill:deploy ship it", source: "user" }, dir);
     expect(loop.currentSkill()?.skillName).toBe("deploy");
 

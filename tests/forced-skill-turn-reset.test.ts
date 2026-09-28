@@ -1,15 +1,17 @@
-// A user-forced skill must survive the turn boundary (#28, forced-skill lifecycle).
+// A skill selection must survive the whole PROMPT, not just one Pi turn/round (#28, #67,
+// #69, #70, #71 — the prompt-scoped skill lifecycle).
 //
-// Pi emits `input` BEFORE the first `turn_start` (agent-session `prompt()`: input event,
-// then the agent run that emits turn_start per tool round). pi-kcp detects a forced
-// `/skill:<name>` at `input` — but GovernedLoop.beginTurn used to clear the active skill
-// unconditionally at every `turn_start`, which always fires next. So a user-forced skill
-// could NEVER reach the first `tool_call`, and with `requireActiveSkill: true` every
-// forced-skill prompt fail-closed with the strict no-active-skill refusal. The existing
-// wiring test fired `input` alone (never followed by `turn_start`) and the enforcement
-// e2e tests activate via the agent-driven SKILL.md-read path, so nothing replayed the
-// real sequence. This file replays it — input → turn_start → tool_call — through the
-// real registered handlers with the real HarnessConformanceChecker over a real manifest.
+// Pi's real event order is `input` → `before_agent_start` → `turn_start(0)` → `tool_call`
+// → ... → `turn_start(N)` → ... → `agent_end` → possibly `turn_start` again with NO new
+// `input` in between (retry/compaction/queued continuation —
+// `while (_handlePostAgentRun()) agent.continue()` in agent-session.js) → eventually
+// `agent_settled`, which is the only event Pi guarantees means "this prompt is truly over."
+// `GovernedLoop.beginTurn()` (called from `turn_start`) resets only ROUND artifacts —
+// the correlation id, the ledger, this round's approvals — and does not touch the active
+// skill or the planner's traced units, which live from `input`/`before_agent_start` through
+// `agent_settled` (`GovernedLoop.endPrompt()`). This file replays that real sequence
+// through the actually-registered handlers, with the real `HarnessConformanceChecker` over
+// a real manifest.
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,6 +20,7 @@ import type { ExtensionAPI, ExecResult, SlashCommandInfo } from "@earendil-works
 
 import register from "../src/index.js";
 import { GovernedLoop } from "../src/governed-loop.js";
+import { HarnessConformanceChecker } from "../src/harness-conformance.js";
 import { parseTrace, type TracedUnit } from "../src/skill-gate.js";
 import type { SkillSelected } from "../src/skill-detection.js";
 
@@ -55,19 +58,51 @@ class FakePi {
 }
 
 let dir = "";
+let dirLenient = "";
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "pi-kcp-forced-"));
   await mkdir(join(dir, ".pi"), { recursive: true });
   // Strict mode: only ever act within a declared skill. This is the configuration under
-  // which the bug was observed in production (an RPC-driven Pi consumer).
+  // which the original bug was observed in production (an RPC-driven Pi consumer).
   await writeFile(
     join(dir, ".pi", "kcp.json"),
     JSON.stringify({ enabled: true, governance: "tool", requireActiveSkill: true, autoRecall: false }),
   );
-  // The real manifest the HarnessConformanceChecker resolves action_scope from.
+  // The real manifest the HarnessConformanceChecker resolves action_scope from. `narrow`
+  // deliberately excludes `read`, so a SKILL.md read attempted while it is active is
+  // itself non-conformant — the fixture the no-swap-on-block test needs.
   await writeFile(
     join(dir, "knowledge.yaml"),
+    [
+      "project: t",
+      "units:",
+      "  - id: deploy",
+      "    kind: skill",
+      "    path: skills/deploy/SKILL.md",
+      "    action_scope:",
+      "      tools: [read]",
+      "  - id: narrow",
+      "    kind: skill",
+      "    path: skills/narrow/SKILL.md",
+      "    action_scope:",
+      "      tools: [bash]",
+      "",
+    ].join("\n"),
+  );
+
+  // Lenient (default) mode: no active skill passes conformance, unscoped. Used where a
+  // test needs to bootstrap a skill purely by an agent SKILL.md read with nothing already
+  // active — under strict mode that first read is itself fail-closed (#70's fix means a
+  // read is judged by whatever skill is ALREADY in force, and none is, yet).
+  dirLenient = await mkdtemp(join(tmpdir(), "pi-kcp-forced-lenient-"));
+  await mkdir(join(dirLenient, ".pi"), { recursive: true });
+  await writeFile(
+    join(dirLenient, ".pi", "kcp.json"),
+    JSON.stringify({ enabled: true, governance: "tool", requireActiveSkill: false, autoRecall: false }),
+  );
+  await writeFile(
+    join(dirLenient, "knowledge.yaml"),
     [
       "project: t",
       "units:",
@@ -82,6 +117,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await rm(dir, { recursive: true, force: true });
+  await rm(dirLenient, { recursive: true, force: true });
 });
 
 const STRICT_REFUSAL = "no active skill — fail-closed (requireActiveSkill)";
@@ -176,79 +212,154 @@ describe("a user-forced skill survives the input → turn_start → tool_call se
   });
 });
 
-describe("an agent-driven skill selection persists across tool rounds (ref #67)", () => {
-  it("activates at the SKILL.md read and keeps governing later turn_start rounds of the same prompt", async () => {
-    const pi = new FakePi();
-    register(pi.asApi());
+describe("an agent-driven skill selection survives the whole prompt (ref #67, #71)", () => {
+  it(
+    "stays scoped across turn_start rounds and an agent_end continuation, " +
+      "and clears only at agent_settled — never at agent_end",
+    async () => {
+      const pi = new FakePi();
+      register(pi.asApi());
 
-    await pi.fire("input", { text: "run the deploy checklist", source: "rpc" }, dir);
-    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+      // A write is outside deploy's action_scope (`tools: [read]`) — a clean probe for
+      // "is a skill active and scoped" vs. "nothing active, unscoped" under lenient mode:
+      // blocked means deploy is still in force, undefined means it is not.
+      const probe = (toolCallId: string) =>
+        pi.fire("tool_call", { toolCallId, toolName: "write", input: { path: "/tmp/x", content: "x" } }, dirLenient);
 
-    // The agent loads the skill itself: a read of its SKILL.md, inside the turn. The
-    // selection lands before the conformance check, so the read is adjudicated in-scope.
-    const load = await pi.fire(
-      "tool_call",
-      { toolCallId: "t1", toolName: "read", input: { path: `${dir}/skills/deploy/SKILL.md` } },
-      dir,
-    );
-    expect(load).toBeUndefined();
+      await pi.fire("input", { text: "run the deploy checklist", source: "rpc" }, dirLenient);
+      await pi.fire(
+        "before_agent_start",
+        { prompt: "run the deploy checklist", systemPrompt: "you are pi", systemPromptOptions: {} },
+        dirLenient,
+      );
+      await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dirLenient);
 
-    // Active for the remainder of this turn.
-    const sameTurn = await pi.fire(
-      "tool_call",
-      { toolCallId: "t2", toolName: "read", input: { path: "docs/deploy.md" } },
-      dir,
-    );
-    expect(sameTurn).toBeUndefined();
+      // The agent loads the skill itself: a read of its SKILL.md. No skill was active
+      // before it, so under lenient mode the read itself passes conformance, and only
+      // THEN does it take effect as a selection (#70).
+      const load = await pi.fire(
+        "tool_call",
+        { toolCallId: "t1", toolName: "read", input: { path: `${dirLenient}/skills/deploy/SKILL.md` } },
+        dirLenient,
+      );
+      expect(load).toBeUndefined();
+      expect((await probe("t2")).block).toBe(true);
 
-    // AND the next round: `turn_start` fires again per tool round (#67 — this used to be
-    // wiped here, and an out-of-scope action in this round would pass through ungoverned).
-    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
-    const nextRoundInScope = await pi.fire(
-      "tool_call",
-      { toolCallId: "t3", toolName: "read", input: { path: "docs/deploy.md" } },
-      dir,
-    );
-    expect(nextRoundInScope).toBeUndefined();
+      // A second round of the SAME prompt: turn_start fires again, and the skill is
+      // still scoped (ref #67 — this used to be wiped here).
+      await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dirLenient);
+      expect((await probe("t3")).block).toBe(true);
 
-    // The skill's action_scope (`tools: [read]`) still constrains the later round: a
-    // `write`-shaped call is blocked, not silently allowed as it was pre-fix.
-    const nextRoundOutOfScope = await pi.fire(
-      "tool_call",
-      { toolCallId: "t4", toolName: "write", input: { path: "/tmp/probe.txt", content: "x" } },
-      dir,
-    );
-    expect(nextRoundOutOfScope.block).toBe(true);
-    expect(nextRoundOutOfScope.reason).toContain('tool "write" is outside the skill\'s authorized tools');
+      // agent_end: NOT the prompt boundary (ref #71). Pi may retry/compact/continue after
+      // this with no new `input`. The skill must still be scoped in that continuation.
+      await pi.fire("agent_end", { messages: [{ role: "assistant" }] }, dirLenient);
+      await pi.fire("turn_start", { turnIndex: 2, timestamp: 0 }, dirLenient);
+      expect((await probe("t4")).block).toBe(true);
+
+      // agent_settled: the true prompt boundary. Only now does the skill clear.
+      await pi.fire("agent_settled", {}, dirLenient);
+      await pi.fire("input", { text: "now something else", source: "extension" }, dirLenient);
+      await pi.fire("turn_start", { turnIndex: 3, timestamp: 0 }, dirLenient);
+      expect(await probe("t5")).toBeUndefined();
+    },
+  );
+
+  it("a later SKILL.md read for a different skill replaces it mid-prompt", async () => {
+    const loop = new GovernedLoop();
+    loop.beginTurn(0);
+    await loop.evaluateToolCall("read", { path: "skills/deploy/SKILL.md" }, { cwd: "/repo" });
+    expect(loop.currentSkill()?.skillName).toBe("deploy");
+
+    loop.beginTurn(1);
+    await loop.evaluateToolCall("read", { path: "skills/other/SKILL.md" }, { cwd: "/repo" });
+    expect(loop.currentSkill()?.skillName).toBe("other");
   });
 
   it("ends at the next input that does not re-select it", async () => {
     const pi = new FakePi();
     register(pi.asApi());
 
-    await pi.fire("input", { text: "run the deploy checklist", source: "rpc" }, dir);
-    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+    await pi.fire("input", { text: "run the deploy checklist", source: "rpc" }, dirLenient);
+    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dirLenient);
     await pi.fire(
       "tool_call",
-      { toolCallId: "t1", toolName: "read", input: { path: `${dir}/skills/deploy/SKILL.md` } },
-      dir,
+      { toolCallId: "t1", toolName: "read", input: { path: `${dirLenient}/skills/deploy/SKILL.md` } },
+      dirLenient,
     );
 
     // New prompt, no SKILL.md read in it: the prior agent-driven selection must not
-    // survive into it (strict mode fail-closes again, same as the forced-skill case).
-    await pi.fire("input", { text: "now something unrelated", source: "rpc" }, dir);
-    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
+    // survive into it — a write outside deploy's scope now passes unscoped.
+    await pi.fire("input", { text: "now something unrelated", source: "rpc" }, dirLenient);
+    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dirLenient);
     const decision = await pi.fire(
       "tool_call",
-      { toolCallId: "t2", toolName: "read", input: { path: "docs/deploy.md" } },
-      dir,
+      { toolCallId: "t2", toolName: "write", input: { path: "/tmp/x", content: "x" } },
+      dirLenient,
     );
-    expect(decision.block).toBe(true);
-    expect(decision.reason).toContain(STRICT_REFUSAL);
+    expect(decision).toBeUndefined();
   });
 });
 
-describe("re-selection at the turn boundary stays gated per turn", () => {
+describe("SKILL.md-read precedence and no-swap-on-block (ref #70)", () => {
+  it("an agent-driven read cannot override an active user-forced skill", async () => {
+    const pi = new FakePi();
+    // A pre-built loop bypasses register()'s own checker construction (its `checker` is
+    // fixed at construction time), so wire it with the real HarnessConformanceChecker
+    // here to actually exercise scope enforcement, matching `dir`'s strict fixture.
+    const loop = new GovernedLoop({ checker: new HarnessConformanceChecker({ requireActiveSkill: true }) });
+    register(pi.asApi(), { loop });
+
+    await pi.fire("input", { text: "/skill:deploy go", source: "rpc" }, dir);
+    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+    expect(loop.currentSkill()?.skillName).toBe("deploy");
+    expect(loop.currentSkill()?.source).toBe("user");
+
+    // A read of a different skill's SKILL.md is itself a `read` call, which is IN scope
+    // for `deploy` (tools: [read]) — so it is conformant and would normally take effect...
+    const read = await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "read", input: { path: "skills/narrow/SKILL.md" } },
+      dir,
+    );
+    expect(read).toBeUndefined();
+
+    // ...but precedence refuses the swap: a user force holds until revocation or prompt
+    // end, and an agent read never displaces it.
+    expect(loop.currentSkill()?.skillName).toBe("deploy");
+    expect(loop.currentSkill()?.source).toBe("user");
+  });
+
+  it("a non-conformant SKILL.md read does not swap the skill", async () => {
+    const pi = new FakePi();
+    const loop = new GovernedLoop({ checker: new HarnessConformanceChecker({ requireActiveSkill: true }) });
+    register(pi.asApi(), { loop });
+
+    // `narrow`'s scope is `tools: [bash]` — it does not authorize `read` at all, so
+    // reading ANY SKILL.md while it is active, including a wider one, is itself blocked.
+    await pi.fire("input", { text: "/skill:narrow go", source: "rpc" }, dir);
+    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+    expect(loop.currentSkill()?.skillName).toBe("narrow");
+
+    const read = await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "read", input: { path: "skills/deploy/SKILL.md" } },
+      dir,
+    );
+    expect(read.block).toBe(true);
+
+    // No swap happened: `narrow` is still active, and its scope (bash-only) still governs
+    // — a bash call passes, proving the loop did not fall back to "no skill" either.
+    expect(loop.currentSkill()?.skillName).toBe("narrow");
+    const bash = await pi.fire(
+      "tool_call",
+      { toolCallId: "t2", toolName: "bash", input: { command: "ls" } },
+      dir,
+    );
+    expect(bash).toBeUndefined();
+  });
+});
+
+describe("the skill and the planner trace persist across beginTurn (no per-round reset)", () => {
   const trace = (units: Array<Partial<TracedUnit>>): TracedUnit[] =>
     parseTrace(
       JSON.stringify({
@@ -260,27 +371,20 @@ describe("re-selection at the turn boundary stays gated per turn", () => {
     );
   const commands = [{ name: "skill:deploy", description: "", source: "project" } as never];
 
-  it("re-selects both a user-forced and an agent-loaded skill after beginTurn (ref #67)", async () => {
+  it("both a user-forced and an agent-loaded skill survive beginTurn unchanged", async () => {
     const loop = new GovernedLoop();
     loop.beginTurn(0);
 
-    // Agent-loaded: now survives the turn boundary too.
     await loop.evaluateToolCall("read", { path: "skills/deploy/SKILL.md" }, { cwd: "/repo" });
     expect(loop.currentSkill()?.source).toBe("agent");
     loop.beginTurn(1);
     expect(loop.currentSkill()?.skillName).toBe("deploy");
     expect(loop.currentSkill()?.source).toBe("agent");
 
-    // A later SKILL.md read for a different skill replaces it — still governed per-turn.
-    await loop.evaluateToolCall("read", { path: "skills/other/SKILL.md" }, { cwd: "/repo" });
-    expect(loop.currentSkill()?.skillName).toBe("other");
-    loop.beginTurn(2);
-    expect(loop.currentSkill()?.skillName).toBe("other");
-
     // A subsequent /skill: input ends the agent-driven persistence and takes over.
     loop.observeInput("/skill:deploy go", commands);
     expect(loop.currentSkill()?.source).toBe("user");
-    loop.beginTurn(3);
+    loop.beginTurn(2);
     expect(loop.currentSkill()?.skillName).toBe("deploy");
     expect(loop.currentSkill()?.source).toBe("user");
   });
@@ -300,89 +404,31 @@ describe("re-selection at the turn boundary stays gated per turn", () => {
     expect(loop.currentSkill()).toBeUndefined();
     expect(refused).toHaveLength(1);
 
-    // The next turn boundary must not re-arm what the gate revoked (that would be a
-    // per-turn refusal loop, not a decision).
+    // The next turn boundary must not re-arm what the gate revoked — there is no
+    // re-selection at the turn boundary any more to do that.
     loop.beginTurn(1);
     expect(loop.currentSkill()).toBeUndefined();
     expect(refused).toHaveLength(1);
   });
 
-  it("a planner-gate revocation of an agent-loaded skill is not resurrected next turn either", async () => {
-    const refused: Array<[SkillSelected, string]> = [];
-    const loop = new GovernedLoop({ hooks: { onSkillRefused: (s, r) => refused.push([s, r]) } });
+  it("the trace itself is prompt-scoped: it survives beginTurn, and only endPrompt clears it (ref #69)", () => {
+    const loop = new GovernedLoop();
     loop.beginTurn(0);
-    await loop.evaluateToolCall("read", { path: "skills/deploy/SKILL.md" }, { cwd: "/repo" });
-    expect(loop.currentSkill()?.skillName).toBe("deploy");
-
-    const revoked = loop.setTracedUnits(
+    loop.setTracedUnits(
       trace([{ id: "deploy", path: "skills/deploy/SKILL.md", gates: [{ gate: "temporal", passed: false, detail: "expired" }] }]),
     );
-    expect(revoked?.skillName).toBe("deploy");
-    expect(loop.currentSkill()).toBeUndefined();
-    expect(refused).toHaveLength(1);
 
+    // The trace refuses `deploy` — this still holds after a turn boundary with no new
+    // trace, because beginTurn does not clear it.
     loop.beginTurn(1);
+    loop.observeInput("/skill:deploy go", commands);
     expect(loop.currentSkill()).toBeUndefined();
-    expect(refused).toHaveLength(1);
-  });
-});
 
-describe("agent_end ends the prompt for extension-sourced input too (ref #68 follow-up)", () => {
-  it("does not let a skill read in one prompt satisfy strict mode in a later extension-driven prompt", async () => {
-    const pi = new FakePi();
-    register(pi.asApi());
-
-    // Prompt 1: a normal user prompt that loads the skill via a SKILL.md read.
-    await pi.fire("input", { text: "run the deploy checklist", source: "rpc" }, dir);
-    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
-    const load = await pi.fire(
-      "tool_call",
-      { toolCallId: "t1", toolName: "read", input: { path: `${dir}/skills/deploy/SKILL.md` } },
-      dir,
-    );
-    expect(load).toBeUndefined();
-    await pi.fire("agent_end", { messages: [{ role: "assistant" }] }, dir);
-
-    // Prompt 2: extension-sourced input (Pi's `sendUserMessage`, e.g. a tool feeding a
-    // follow-up message back to the agent) — `src/index.ts`'s `input` handler returns
-    // early for this source and never calls `observeInput`. Before this fix, the skill
-    // persisted from prompt 1 would still be active here and silently satisfy strict
-    // mode; it must not.
-    await pi.fire("input", { text: "now something else", source: "extension" }, dir);
-    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
-    const decision = await pi.fire(
-      "tool_call",
-      { toolCallId: "t2", toolName: "read", input: { path: "docs/deploy.md" } },
-      dir,
-    );
-    expect(decision.block).toBe(true);
-    expect(decision.reason).toContain(STRICT_REFUSAL);
-  });
-
-  it("also ends a user-forced /skill: selection at agent_end, before any next input", async () => {
-    const pi = new FakePi();
-    register(pi.asApi());
-
-    await pi.fire("input", { text: "/skill:deploy go", source: "rpc" }, dir);
-    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
-    const inScope = await pi.fire(
-      "tool_call",
-      { toolCallId: "t1", toolName: "read", input: { path: "docs/deploy.md" } },
-      dir,
-    );
-    expect(inScope).toBeUndefined();
-    await pi.fire("agent_end", { messages: [{ role: "assistant" }] }, dir);
-
-    // Extension-sourced follow-up: the forced selection from the previous prompt must not
-    // survive it either (same field, same fix).
-    await pi.fire("input", { text: "continue", source: "extension" }, dir);
-    await pi.fire("turn_start", { turnIndex: 1, timestamp: 0 }, dir);
-    const decision = await pi.fire(
-      "tool_call",
-      { toolCallId: "t2", toolName: "read", input: { path: "docs/deploy.md" } },
-      dir,
-    );
-    expect(decision.block).toBe(true);
-    expect(decision.reason).toContain(STRICT_REFUSAL);
+    // Only the prompt boundary clears it, so a fresh prompt with no trace is admitted
+    // rather than silently refused by a stale one.
+    loop.endPrompt();
+    loop.beginTurn(2);
+    loop.observeInput("/skill:deploy go", commands);
+    expect(loop.currentSkill()?.skillName).toBe("deploy");
   });
 });

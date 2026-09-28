@@ -134,16 +134,24 @@ For each turn, the extension runs this loop:
    language (e.g. *"what did we decide last week?"*) and the kcp-memory daemon is
    reachable, an **Episodic Memory** block is prepended to the prompt. Recall is
    **fail-open**: if memory is down or slow, the prompt is sent unchanged. A
-   `/skill:<name>` line here forces that skill for the turn.
-3. **Skill gating.** When the agent loads a skill by reading its `SKILL.md`, that read
-   is recognized and the skill becomes *active* — for the rest of the **prompt**, not just
-   the turn it was read in: Pi fires a fresh `turn_start` on every tool round, and the
-   selection (agent-driven or `/skill:`-forced) now survives those round boundaries the
-   same way, so a skill's `action_scope` keeps constraining every later round of the same
-   prompt (ref #67). A later `SKILL.md` read for a different skill replaces it, a planner
-   revocation ends it early, and it is cleared once the prompt itself ends (Pi's
-   `agent_end`) — including a prompt driven by an extension-sourced `sendUserMessage`,
-   which bypasses the `/skill:` detection on `input` (ref #68).
+   `/skill:<name>` line here forces that skill for the **prompt** — every round of it, not
+   just the one it was typed in. This is skipped for a mid-run steer/follow-up (an input
+   delivered into a live run, not a new prompt) so it cannot end an in-force selection
+   mid-prompt.
+3. **Skill gating and precedence.** When the agent loads a skill by reading its
+   `SKILL.md`, that read is recognized and the skill becomes *active* for the rest of the
+   **prompt**, not just the round it was read in: Pi fires a fresh `turn_start` on every
+   tool round (and again after a retry/compaction/queued continuation with no new
+   `input`), and the selection survives all of that, so a skill's `action_scope` keeps
+   constraining every later round of the same prompt (ref #67, #71). A user-forced
+   `/skill:` selection takes precedence: it holds until a planner revocation or the prompt
+   ends, and an agent-driven `SKILL.md` read can only fill the slot when no user force is
+   already in effect — it never silently displaces one (ref #70). A `SKILL.md` read is
+   itself checked against whatever skill is *already* in force before any swap happens, so
+   a blocked read never takes effect as a selection. The slot is cleared once the prompt
+   truly ends — Pi's `agent_settled`, not `agent_end` (Pi may retry or continue after
+   `agent_end` with no new `input`) — including a prompt driven by an extension-sourced
+   `sendUserMessage` (ref #71).
 4. **Conformance block.** Every native `tool_call` is checked before it runs. When a
    skill is active, the call is mapped to a harness action (its tool name, plus `path`
    / `file_path` / `url` targets), the active skill's `action_scope` is resolved from
@@ -256,11 +264,14 @@ stays meaningful because it never fires on them.
 At `turn_end` the record is emitted via the `onTurnRecorded` hook. If any stage's gate
 broke, or any stage never reported at all, `onUngoverned` fires with the reason.
 
-### Skills are gated before they shape a turn
+### Skills are gated before they shape a prompt
 
-*(`governance: "full"` only.)* The plan stage runs `kcp-agent plan --trace --json`, which
-adjudicates every declared unit against the planner's 14 gates. A skill whose unit failed a
-gate never becomes active:
+*(`governance: "full"` only.)* The plan stage runs once per prompt, at `before_agent_start`
+(`kcp-agent plan --trace --json`), which adjudicates every declared unit against the
+planner's 14 gates. The resulting trace is prompt-scoped — it is not re-run or cleared per
+`turn_start` round, and it gates every skill selection made anywhere in the prompt, not
+just the round the plan stage itself ran in. A skill whose unit failed a gate never
+becomes active:
 
 ```text
 ## KCP — skill deploy was not loaded
