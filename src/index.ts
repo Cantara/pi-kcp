@@ -967,13 +967,14 @@ function registerGovernedCycle(
   // plan — the prompt is known and Pi has already assembled what it loaded, so the stage
   // can inspect that rather than re-discovering resources.
   pi.on("before_agent_start", async (event, ctx) => {
+    // Unconditional, like `agent_start`/`agent_settled` (#71 early-failure leak): marks
+    // the latest observed input as one Pi has actually committed to running, regardless
+    // of governance mode. First, so a later throw (e.g. from `refreshMode`'s config read)
+    // can't skip it.
+    loop.onBeforeAgentStart();
     // Refresh here too: this fires BEFORE the first `turn_start` of a prompt (ref #69), so
     // on a session's first-ever prompt `mode` would otherwise still be the "off" default.
     await refreshMode(ctx.cwd);
-    // Unconditional, like `agent_start`/`agent_settled` (#71 early-failure leak): marks
-    // the latest observed input as one Pi has actually committed to running, regardless
-    // of governance mode.
-    loop.onBeforeAgentStart();
     if (!full()) return undefined;
     await loop.stage("plan", async () => {
       const detail: Record<string, unknown> = {
