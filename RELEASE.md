@@ -1,5 +1,22 @@
 # Release notes
 
+## 0.12.2 — the plan/synthesize/ground stages actually record now — 2026-09-28
+
+`/kcp evidence` on a from-scratch full-mode governed turn reported `UNGOVERNED: plan,
+synthesize, ground` on every single real turn against Pi 0.80.6 — not a config problem,
+an event-ordering one. Traced with real timestamps: `before_agent_start` (plan) fires
+BEFORE `turn_start` has run (they're dispatched on genuinely different paths inside Pi),
+so plan's mode check always saw the stale default; `agent_end` (synthesize, ground)
+fires AFTER `turn_end` has already snapshotted and pushed the turn's record, so those
+two stages recorded into a ledger already gone.
+
+Fixed with two coordination mechanisms in `GovernedLoop` (`openRoundFromTurnStart`/
+`openRoundFromBeforeAgentStart`, `recordLateStage`) that work regardless of which order
+a given Pi version fires these in — this repo's own existing tests use the OTHER order,
+and still pass unchanged. Verified live (`turn 0 — governed`, all seven stages, real
+Claude Sonnet 5, real tool use) and by 5 new deterministic tests covering exactly the
+single-round edge case live verification alone would have missed.
+
 ## 0.12.1 — resolve kcp-agent from local node_modules/.bin — 2026-09-28
 
 `findAgentInvocation` only checked two hardcoded global install paths (Homebrew,
