@@ -188,7 +188,7 @@ describe("the loop refuses a skill the gates rejected", () => {
     expect(refused).toEqual([]);
   });
 
-  it("clears the trace between turns", () => {
+  it("does NOT clear the trace at the next turn (round) — it is prompt-scoped (#69)", () => {
     const { loop } = loopWithTrace([
       { id: "deploy", path: "skills/deploy/SKILL.md", gates: [{ gate: "deprecated", passed: false, detail: "retired" }] },
     ]);
@@ -198,7 +198,25 @@ describe("the loop refuses a skill the gates rejected", () => {
       { name: "skill:deploy", description: "", source: "project" } as never,
     ]);
 
-    // No trace for turn 2 → nothing to gate against → admitted rather than silently refused.
+    // The trace was set once for this prompt (mirrors `before_agent_start`) and
+    // `beginTurn` (mirrors `turn_start`) does not touch it — the same gate that refused
+    // it once keeps refusing it for the rest of the prompt.
+    expect(loop.currentSkill()).toBeUndefined();
+  });
+
+  it("clears the trace only at the prompt boundary (endPrompt)", () => {
+    const { loop } = loopWithTrace([
+      { id: "deploy", path: "skills/deploy/SKILL.md", gates: [{ gate: "deprecated", passed: false, detail: "retired" }] },
+    ]);
+    loop.endPrompt();
+    loop.beginTurn(2);
+
+    loop.observeInput("/skill:deploy", [
+      { name: "skill:deploy", description: "", source: "project" } as never,
+    ]);
+
+    // No trace for the new prompt → nothing to gate against → admitted rather than
+    // silently refused.
     expect(loop.currentSkill()?.skillName).toBe("deploy");
   });
 

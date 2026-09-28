@@ -845,11 +845,14 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // The turn's configuration, captured with it, so the plan stage need not re-read disk.
   let turnConfig: KcpConfig = defaultConfig;
 
-  // Mint a fresh per-turn correlation id (#29) at the turn boundary.
-  pi.on("turn_start", async (event, ctx) => {
-    const { config } = await loadConfig(ctx.cwd);
+  // Recompute mode/config from disk. Pi's real order is `input` → `before_agent_start` →
+  // `turn_start(0)` (ref #69/#71), so on a session's very first prompt `before_agent_start`
+  // (the plan stage) runs before any `turn_start` ever has — reading only from `turn_start`
+  // left `mode` at its "off" declaration default and the plan stage silently never ran on
+  // cold start. Both boundaries call this now, so whichever fires first seeds it.
+  const refreshMode = async (cwd: string): Promise<KcpConfig> => {
+    const { config } = await loadConfig(cwd);
     mode = governOverride ?? (config.enabled ? config.governance : "off");
-    loop.beginTurn(event.turnIndex, mode);
     posture = config.gateFailurePosture;
     turnConfig = config;
     // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
@@ -857,12 +860,26 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     if (builtInChecker && options.requireActiveSkill === undefined) {
       builtInChecker.requireActiveSkill = config.requireActiveSkill;
     }
+    return config;
+  };
+
+  // Mint a fresh per-turn correlation id (#29) at the turn boundary.
+  pi.on("turn_start", async (event, ctx) => {
+    await refreshMode(ctx.cwd);
+    loop.beginTurn(event.turnIndex, mode);
   });
 
   pi.on("input", async (event, ctx) => {
+    // A genuine new prompt boundary, not a mid-run steer/follow-up: `streamingBehavior` is
+    // only set for those (delivered into a live run with no new `before_agent_start` /
+    // `turn_start` sequence to follow), so treating one as a prompt boundary would wrongly
+    // end an in-force skill selection mid-prompt (ref #71). Detect user-forced skills
+    // (#28) and reset the prompt-scoped skill slot only for a real new prompt — regardless
+    // of source, so an extension-driven prompt (Pi's `sendUserMessage`) is covered too.
+    if (event.streamingBehavior === undefined) {
+      loop.observeInput(event.text, getCommands());
+    }
     if (event.source === "extension") return { action: "continue" as const };
-    // Detect user-forced skills (#28): `/skill:<name>` selects a skill for the turn.
-    loop.observeInput(event.text, getCommands());
     const config = (await loadConfig(ctx.cwd)).config;
     const transformed = await augmentPrompt(event.text, config);
     return transformed === event.text
@@ -914,7 +931,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     return decision.block ? { block: true, reason: decision.reason } : undefined;
   });
 
-  registerGovernedCycle(pi, loop, () => mode, () => turnConfig);
+  registerGovernedCycle(pi, loop, () => mode, () => turnConfig, refreshMode);
 }
 
 /**
@@ -930,6 +947,7 @@ function registerGovernedCycle(
   loop: GovernedLoop,
   mode: () => GovernanceMode,
   turnConfig: () => KcpConfig,
+  refreshMode: (cwd: string) => Promise<KcpConfig>,
 ): void {
   // The five non-tool stages belong to `full` only. `tool` mode is the governance
   // boundary without the per-turn planner invocation.
@@ -938,6 +956,9 @@ function registerGovernedCycle(
   // plan — the prompt is known and Pi has already assembled what it loaded, so the stage
   // can inspect that rather than re-discovering resources.
   pi.on("before_agent_start", async (event, ctx) => {
+    // Refresh here too: this fires BEFORE the first `turn_start` of a prompt (ref #69), so
+    // on a session's first-ever prompt `mode` would otherwise still be the "off" default.
+    await refreshMode(ctx.cwd);
     if (!full()) return undefined;
     await loop.stage("plan", async () => {
       const detail: Record<string, unknown> = {
@@ -987,12 +1008,12 @@ function registerGovernedCycle(
 
   // synthesize is the provider's, and ground checks what it returned. Both are known at
   // agent_end: the messages are the evidence that synthesis happened at all.
+  //
+  // NOT the prompt boundary (ref #71): Pi may retry, compact, or run a queued
+  // continuation after `agent_end` with no new `input` in between
+  // (`while (_handlePostAgentRun()) agent.continue()` in agent-session.js) — the
+  // prompt-scoped skill slot must survive that, so nothing is cleared here.
   pi.on("agent_end", async (event) => {
-    // Prompt boundary, unconditionally — not gated by `full()`. `agent_end` fires once per
-    // agent loop regardless of governance mode, and an extension-sourced `input` (Pi's
-    // `sendUserMessage`) never reaches `observeInput`'s clear, so this is the only place a
-    // skill selected under `tool` mode is guaranteed not to leak into the next prompt.
-    loop.endPrompt();
     if (!full()) return undefined;
     await loop.stage("synthesize", async () => ({
       detail: { owner: "provider", messages: event.messages.length },
@@ -1000,6 +1021,15 @@ function registerGovernedCycle(
     await loop.stage("ground", async () => ({
       detail: { messages: event.messages.length },
     }));
+    return undefined;
+  });
+
+  // The true prompt boundary: fired once the run has fully settled — no automatic retry,
+  // compaction, or queued continuation will run (docs/extensions.md). Unconditional, not
+  // gated by `full()`: the prompt-scoped skill slot must not leak into the next prompt
+  // regardless of governance mode.
+  pi.on("agent_settled", async () => {
+    loop.endPrompt();
     return undefined;
   });
 
