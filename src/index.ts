@@ -980,13 +980,16 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // `turn_start` hasn't already (see {@link GovernedLoop.openRoundFromTurnStart}'s doc for the
   // full, order-agnostic mechanism this and `turn_start` share).
   pi.on("before_agent_start", async (event, ctx) => {
+    // Unconditional, like `agent_start`/`agent_settled` (#71 early-failure leak): marks the
+    // latest observed input as one Pi has actually committed to running, regardless of
+    // governance mode. First, so a later throw (e.g. from the config read) cannot skip it.
+    loop.onBeforeAgentStart();
     const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
+    // Seed the shared turn state even when the plan stage will not run: this fires BEFORE
+    // the first `turn_start` of a session (ref #69), so `mode`/`posture`/the built-in
+    // checker's strict flag would otherwise still be their declaration defaults.
+    applyTurnConfig(resolvedMode, config);
     if (resolvedMode !== "full") return undefined;
-    // Keep the shared turn state current for anything that fires in the (short) window
-    // before `turn_start` itself runs and overwrites these with the same values.
-    mode = resolvedMode;
-    turnConfig = config;
-    posture = config.gateFailurePosture;
     loop.openRoundFromBeforeAgentStart(resolvedMode);
 
     await loop.stage("plan", async () => {

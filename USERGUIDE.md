@@ -207,7 +207,17 @@ automatic behavior and is reported by `/kcp health`.
 - `requireActiveSkill` — strict conformance mode (default `false`). When `true`, tool
   calls taken with **no active skill** are fail-closed instead of passing through to
   the other gates. Use it for high-assurance autonomous agents that should only ever
-  act within a declared skill's `action_scope`.
+  act within a declared skill's `action_scope`. The one exception is a bootstrap
+  `SKILL.md` read with no skill yet active: that read is the action which *establishes*
+  a skill, not one taken under it, so it is admitted (not fail-closed) and judged by
+  planner admission instead of conformance. **Under `governance: "tool"` (the default —
+  no per-turn planner trace) that admission is unconditional**: the read's resolved
+  skill name is admitted for any manifest unit it matches, including one derived from a
+  path that does not exist on disk, so the agent can effectively pick any skill declared
+  in the manifest by naming its `SKILL.md` path. This is not unbounded, though — the
+  matched skill's own `action_scope` still bounds every action taken under it exactly as
+  before; only the *selection* is unchecked. Set `governance: "full"` to gate the
+  selection itself against the planner's trace.
 - `governance` — how much of the governed cycle runs (default `"tool"`).
 
   | Mode | What runs | Cost |
