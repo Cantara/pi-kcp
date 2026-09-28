@@ -437,10 +437,36 @@ async function commandInvocation(pi: ExtensionAPI, command: string): Promise<Age
   return path ? agentInvocationForPath(path.split("\n")[0]) : undefined;
 }
 
-async function findAgentInvocation(pi: ExtensionAPI, config: KcpConfig): Promise<AgentInvocation | undefined> {
+/**
+ * `<dir>/node_modules/.bin/kcp-agent` for `cwd` and every ancestor up to the filesystem
+ * root — the same directory-walk Node's own module resolution uses, so a project that
+ * declares kcp-agent as a (possibly transitive, e.g. via kcp-harness) dependency resolves
+ * it the way `npm run`/`bunx` would, without needing it globally installed or on PATH.
+ *
+ * This was the missing case: `findAgentInvocation`'s only local checks were two hardcoded
+ * GLOBAL install locations (Homebrew, `~/.npm-global`) plus a bare `which kcp-agent` — so a
+ * project that `bun install`/`npm install`s kcp-agent locally (the common case; that's what
+ * this repo's own devDependency on kcp-harness does) had no candidate that could ever match,
+ * and fell through to "kcp-agent CLI was not found" even with a real, working install two
+ * directories away in `node_modules/.bin/`.
+ */
+function localNodeModulesBinPaths(cwd: string, binName: string): string[] {
+  const paths: string[] = [];
+  let dir = resolve(cwd);
+  for (;;) {
+    paths.push(resolve(dir, "node_modules", ".bin", binName));
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return paths;
+}
+
+export async function findAgentInvocation(pi: ExtensionAPI, cwd: string, config: KcpConfig): Promise<AgentInvocation | undefined> {
   const configured = [config.agentCli, process.env.KCP_AGENT_CLI]
     .filter((candidate): candidate is string => Boolean(candidate));
   const knownPaths = [
+    ...localNodeModulesBinPaths(cwd, "kcp-agent"),
     "/opt/homebrew/lib/node_modules/kcp-harness/node_modules/kcp-agent/dist/cli.js",
     `${process.env.HOME ?? ""}/.npm-global/lib/node_modules/kcp-harness/node_modules/kcp-agent/dist/cli.js`,
   ];
@@ -474,7 +500,7 @@ async function runKcpAgent(
   config: KcpConfig,
   correlationId?: string,
 ): Promise<string> {
-  const invocation = await findAgentInvocation(pi, config);
+  const invocation = await findAgentInvocation(pi, cwd, config);
   if (!invocation) throw new Error(agentNotFoundMessage(config));
 
   // The turn's correlation id goes to the agent only if the installed agent documents the
@@ -547,7 +573,7 @@ async function runSkillTrace(
   config: KcpConfig,
   correlationId?: string,
 ): Promise<string | undefined> {
-  const invocation = await findAgentInvocation(pi, config);
+  const invocation = await findAgentInvocation(pi, cwd, config);
   if (!invocation) return undefined;
 
   const supported = await supportsFlag(
@@ -837,7 +863,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
         const memory = await fetchJson(`${config.memoryUrl.replace(/\/$/, "")}/health`, config.timeoutMs)
           .then(() => "ok")
           .catch(() => "unavailable");
-        const agent = await findAgentInvocation(pi, config);
+        const agent = await findAgentInvocation(pi, ctx.cwd, config);
         const configLine = loaded.status === "invalid"
           ? `invalid — ${loaded.errors.join("; ")}`
           : `${loaded.status}${config.enabled ? "" : " (disabled)"}`;
