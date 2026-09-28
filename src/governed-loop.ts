@@ -651,12 +651,10 @@ export class GovernedLoop {
    * CURRENT {@link promptGeneration} — a run that starts without that confirmation has
    * nothing of its own to inherit.
    *
-   * Residual gap, not fully closed by this: if `before_agent_start` itself runs (marking
-   * this generation consumed) but a *later* handler for that same event throws, `prompt()`
-   * still never starts a run — and this method has no way to tell that apart from a
-   * genuine run for the same, already-consumed generation. Pi exposes no event for that
-   * narrower failure; the two confirmed leak causes above (pre-`before_agent_start`
-   * failure, and no `input` at all) are what this closes.
+   * (A handler that throws during `before_agent_start` does not abort the prompt or skip
+   * this confirmation: `emitBeforeAgentStart` try/catches each handler individually —
+   * runner.js:797-824 — so `before_agent_start` firing is a reliable signal that Pi has
+   * committed to starting a run, regardless of what any single handler does with it.)
    *
    * Second, independent guard: {@link runStartGeneration} matching the current
    * {@link promptGeneration} means some earlier run already claimed this exact generation
