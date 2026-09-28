@@ -1,5 +1,27 @@
 # Release notes
 
+## 0.12.0 — federation, navigation, CLI-primary — 2026-09-28
+
+Four small, docs/config-only changes, made locally on 2026-08-25 and only now
+merged (this entry and the version bump were missing too — `package.json` and
+this file had stopped tracking real tags after 0.8.0, even though v0.9.0
+through v0.11.0 shipped in between; restoring the lockstep here rather than
+letting it drift further).
+
+- **`knowledge.yaml` gains a `federation.manifest` block.** pi-kcp implements
+  the spec's federation clause but had never declared its own manifest
+  entries — unreferenceable without an `id` per §3.6, now fixed with a
+  `kcp-spec` foundation entry.
+- **`CLAUDE.md`** — a thin navigation hub pointing at `knowledge.yaml` (the
+  canonical agent-navigable index) and `kcp-skill` (shared governed-skill
+  authoring conventions), plus a pass over local skills against current repo
+  state.
+- **README** — kcp-agent's CLI made explicit as the primary interface for
+  both humans and agents; `/kcp` and friends are an ergonomics wrapper, not
+  the primary way in.
+- `knowledge.yaml.sig` — re-signed automatically by this push (sign-kcp.yml),
+  superseding the stale manual update these commits originally shipped with.
+
 ## 0.8.0 — the playbook's deny, and the deny that is final — 2026-07-31
 
 KCP v0.32 (RFC-0030, §4.3b) in the runtime, in two halves.
