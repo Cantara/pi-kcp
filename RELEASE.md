@@ -1,5 +1,21 @@
 # Release notes
 
+## 0.12.1 — resolve kcp-agent from local node_modules/.bin — 2026-09-28
+
+`findAgentInvocation` only checked two hardcoded global install paths (Homebrew,
+`~/.npm-global`) plus a bare `which kcp-agent`. A project that installs kcp-agent as
+an ordinary dependency — the way this repo's own devDependency on kcp-harness does —
+had no local candidate that could ever match, and silently fell back to
+tool-boundary-only governance even with a real, working install two directories away.
+Found live, running a governed session against a project with only a local install:
+`/kcp evidence` came back empty after a real turn, full mode unable to find the
+planner it needs.
+
+Fixed: walk from `cwd` up to the filesystem root checking
+`<dir>/node_modules/.bin/kcp-agent` at each level, the same resolution order
+`npm run`/`bunx` use. An explicit `agentCli`/`KCP_AGENT_CLI` override still wins.
+4 new tests — `findAgentInvocation` had none before this.
+
 ## 0.12.0 — federation, navigation, CLI-primary — 2026-09-28
 
 Four small, docs/config-only changes, made locally on 2026-08-25 and only now
