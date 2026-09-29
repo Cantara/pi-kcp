@@ -11,14 +11,27 @@
  * is read, which the bridge contract forbids the wrapper to do anything with at all.
  *
  * Isolation choices, all deliberate:
- *   - `AuthStorage.inMemory()` + `setRuntimeApiKey`: `~/.pi/agent/auth.json` is never read, and
- *     the runtime override outranks everything else in Pi's `getApiKey`. One caveat, verified:
- *     Pi's in-memory storage STILL falls back to the provider's conventional env vars
- *     (`ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` for anthropic) when no override is set — so
- *     the "no credential" smoke mode of {@link createPersonaSession} is only credential-free in
- *     an environment without them. Under the bridge the child env is `{[token_env]: value}`
- *     only, so the credential the wrapper injects is the only one Pi can see there.
- *   - `ModelRegistry.inMemory`: Pi's built-in model catalogue only, no `models.json`.
+ *   - `ModelRuntime.create({authPath, modelsPath})` pointed at THIS SESSION's own throwaway
+ *     `agentDir` (below) + `setRuntimeApiKey`: `~/.pi/agent/auth.json` is never read (the real
+ *     file lives elsewhere entirely; this session's `agentDir` starts empty every time and is
+ *     `rmSync`'d on cleanup), and the runtime override outranks everything else in Pi's
+ *     `getApiKey` — `setRuntimeApiKey` is still a real method on the new `ModelRuntime`, this is
+ *     not a workaround. One caveat, verified: Pi's runtime auth STILL falls back to the
+ *     provider's conventional env vars (`ANTHROPIC_OAUTH_TOKEN`, `ANTHROPIC_API_KEY` for
+ *     anthropic) when no override is set — so the "no credential" smoke mode of
+ *     {@link createPersonaSession} is only credential-free in an environment without them.
+ *     Under the bridge the child env is `{[token_env]: value}` only, so the credential the
+ *     wrapper injects is the only one Pi can see there.
+ *     UPDATED 2026-09-29: `AuthStorage`/`ModelRegistry` (the pair this comment used to name) were
+ *     consolidated into `ModelRuntime` by `@earendil-works/pi-coding-agent` 0.81.0+ (a real,
+ *     deliberate SDK change, not a bug) — `AuthStorage.inMemory()`/`ModelRegistry.inMemory()` no
+ *     longer exist at all. `ModelRuntime.create()` is FILE-path-based, not truly in-memory, so
+ *     the isolation guarantee above now rests on `authPath`/`modelsPath` pointing at a throwaway,
+ *     per-session directory (never the real `~/.pi/agent/`) rather than on nothing touching disk
+ *     at all — the observable behavior (never reads a real credential, nothing persists past
+ *     cleanup) is unchanged, the mechanism is not. See `Sunstone-Atlas`'s own
+ *     `ops/agent-team-pikcp/lib/session.mjs`'s `createStandingSession` for the same migration,
+ *     fixed there first (PR #416) — this mirrors it.
  *   - `SettingsManager.inMemory({compaction:{enabled:false}})`: no user settings, no
  *     compaction turn sneaking a second model call into a one-turn process.
  *   - `SessionManager.inMemory(cwd)`: nothing written under `~/.pi/agent/sessions`.
@@ -88,13 +101,18 @@ export async function createPersonaSession(input: PersonaSessionInput): Promise<
   };
 
   try {
-    const authStorage = pi.AuthStorage.inMemory();
-    const modelRegistry = pi.ModelRegistry.inMemory(authStorage);
-    const resolved = pi.resolveCliModel({ cliModel: input.model, modelRegistry });
+    // See this file's own header ("Isolation choices", UPDATED 2026-09-29): authPath/modelsPath
+    // point at THIS session's own throwaway agentDir, never the real ~/.pi/agent/ — the
+    // replacement for the old AuthStorage.inMemory()/ModelRegistry.inMemory() pair.
+    const modelRuntime = await pi.ModelRuntime.create({
+      authPath: join(agentDir, "auth.json"),
+      modelsPath: join(agentDir, "models.json"),
+    });
+    const resolved = pi.resolveCliModel({ cliModel: input.model, modelRuntime });
     if (!resolved.model) {
       throw new WrapperUsageError(`--model ${JSON.stringify(input.model)} did not resolve: ${resolved.error ?? "unknown model"}`);
     }
-    if (input.apiKey) authStorage.setRuntimeApiKey(resolved.model.provider, input.apiKey);
+    if (input.apiKey) await modelRuntime.setRuntimeApiKey(resolved.model.provider, input.apiKey);
 
     const settingsManager = pi.SettingsManager.inMemory({ compaction: { enabled: false } });
     const loader = new pi.DefaultResourceLoader({
@@ -115,8 +133,7 @@ export async function createPersonaSession(input: PersonaSessionInput): Promise<
       agentDir,
       model: resolved.model,
       thinkingLevel: resolved.thinkingLevel ?? "off",
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       settingsManager,
       resourceLoader: loader,
       sessionManager: pi.SessionManager.inMemory(input.cwd),
