@@ -474,14 +474,20 @@ export class GovernedLoop {
    * Returns the SkillSelected when detected (also emitted via hooks).
    *
    * Each genuine new prompt stands alone: a new input ends whatever {@link activeSkill}
-   * carried over from the previous prompt — forced or agent-driven — and an input without
-   * a `/skill:` prefix leaves none in force. Callers must only invoke this for a real
-   * prompt boundary, not a mid-run steer/follow-up (Pi's `InputEvent.streamingBehavior`
-   * distinguishes them — see `src/index.ts`'s `input` handler); this method itself always
-   * resets, so calling it for a steer would wrongly end an in-force selection mid-prompt.
+   * AND {@link tracedUnits} carried over from the previous prompt — forced or
+   * agent-driven, gated or not — and an input without a `/skill:` prefix leaves none in
+   * force. Clearing the trace too (stale-trace fix, #71 follow-up) matters because a new
+   * `/skill:` selected here is adjudicated via {@link adjudicateSkill}, which treats a
+   * stale trace from the PREVIOUS prompt as a real (and possibly wrong) verdict rather
+   * than "no trace yet" — the correct state until this prompt's own plan stage runs
+   * {@link setTracedUnits} and re-adjudicates. Callers must only invoke this for a real
+   * prompt boundary, not a mid-run steer/follow-up (`ctx.isIdle()` distinguishes them —
+   * see `src/index.ts`'s `input` handler); this method itself always resets, so calling it
+   * mid-run would wrongly end an in-force selection.
    */
   observeInput(text: string, commands: readonly SlashCommandInfo[] = []): SkillSelected | undefined {
     this.activeSkill = undefined;
+    this.tracedUnits = undefined;
     this.promptGeneration += 1;
     const forced = detectForcedSkill(text, commands);
     return forced ? this.noteSkillSelected(forced) : undefined;
@@ -527,6 +533,25 @@ export class GovernedLoop {
    * that same generation has had no `input` of its own since, however
    * {@link consumedGeneration} looks (it does not get invalidated by a settle, only ever
    * advanced by the next confirmed `before_agent_start`) — so this also clears.
+   *
+   * Assessed and deliberately NOT guarded against: two runs overlapping on the SAME
+   * `GovernedLoop` (a new run's `agent_start` landing before an older run's own
+   * `agent_settled`/`endPrompt` has executed — reachable only if some other extension's
+   * `agent_settled` handler starts a new prompt without awaiting it, then stays suspended
+   * on something else long enough for that new prompt to reach `agent_start` before Pi's
+   * emit loop reaches our handler for the old `agent_settled`). `runActive`,
+   * `runStartGeneration` and `consumedGeneration` are single ambient fields, not per-run
+   * tokens — Pi's `AgentStartEvent`/`AgentSettledEvent` carry no run id to key per-run
+   * state on, so there is no way to tell, from inside either method, which of two
+   * overlapping runs a given call belongs to. Making {@link onAgentStart} reclaim the
+   * generation on a `consumedGeneration` mismatch even while `runActive` (i.e. acting as if
+   * this were the overlap, not a plain continue) was tried and rejected: it lets the OLDER
+   * run's later, delayed {@link endPrompt} call read the NEWER run's now-reassigned
+   * `runStartGeneration` as its own and wipe the newer run's still-in-flight selection —
+   * trading a bounded "stays active a little longer than it should" leak for an
+   * unbounded "a live run loses its scope mid-flight" one. The former is the same class of
+   * residual risk already accepted for the deep-nested settle case; the latter is strictly
+   * worse. Left as-is.
    */
   onAgentStart(): void {
     if (this.runActive) return;

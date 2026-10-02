@@ -134,17 +134,20 @@ describe("the loop refuses a skill the gates rejected", () => {
     return { loop, refused, selected };
   }
 
-  it("does not make a refused skill active", () => {
+  it("does not make a refused skill active", async () => {
     const { loop, refused, selected } = loopWithTrace([
       { id: "deploy", path: "skills/deploy/SKILL.md", gates: [{ gate: "deprecated", passed: false, detail: "retired" }] },
     ]);
 
-    const result = loop.observeInput("/skill:deploy", [
-      { name: "skill:deploy", description: "", source: "project" } as never,
-    ]);
+    // An agent-driven read, mid-prompt — `before_agent_start` (which set this trace)
+    // always precedes any tool call, so this is the realistic order for "this prompt's
+    // trace already refuses it." A `/skill:` force at `input` would not do: `observeInput`
+    // now clears any stale trace first (#71 stale-trace fix), so it never stands in for a
+    // trace already established for the SAME prompt.
+    const decision = await loop.evaluateToolCall("read", { path: "skills/deploy/SKILL.md" }, { cwd: "/repo" });
 
-    expect(loop.currentSkill()).toBeUndefined();
-    expect(result).toBeUndefined();
+    expect(decision.block).toBe(false); // the read itself is conformant (pass-through checker)
+    expect(loop.currentSkill()).toBeUndefined(); // but the SELECTION is refused by the trace
     expect(selected).toEqual([]);
     expect(refused).toHaveLength(1);
     expect(refused[0]![1]).toContain("retired");
@@ -188,15 +191,13 @@ describe("the loop refuses a skill the gates rejected", () => {
     expect(refused).toEqual([]);
   });
 
-  it("does NOT clear the trace at the next turn (round) — it is prompt-scoped (#69)", () => {
+  it("does NOT clear the trace at the next turn (round) — it is prompt-scoped (#69)", async () => {
     const { loop } = loopWithTrace([
       { id: "deploy", path: "skills/deploy/SKILL.md", gates: [{ gate: "deprecated", passed: false, detail: "retired" }] },
     ]);
     loop.beginTurn(2);
 
-    loop.observeInput("/skill:deploy", [
-      { name: "skill:deploy", description: "", source: "project" } as never,
-    ]);
+    await loop.evaluateToolCall("read", { path: "skills/deploy/SKILL.md" }, { cwd: "/repo" });
 
     // The trace was set once for this prompt (mirrors `before_agent_start`) and
     // `beginTurn` (mirrors `turn_start`) does not touch it — the same gate that refused
