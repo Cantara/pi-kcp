@@ -1052,7 +1052,15 @@ function registerGovernedCycle(
   // compaction, or queued continuation will run (docs/extensions.md). Unconditional, not
   // gated by `full()`: the prompt-scoped skill slot must not leak into the next prompt
   // regardless of governance mode.
-  pi.on("agent_settled", async () => {
+  //
+  // Overlap guard (#71 follow-up): `!ctx.isIdle()` means a NEWER run has already set
+  // Pi's flag (an earlier extension's `agent_settled` handler started it before this
+  // older run's own settle reached us) — this event belongs to a run that is no longer
+  // current, and calling `endPrompt` now would race the newer run's own state. Leave it
+  // untouched; `GovernedLoop.onAgentStart`'s overlap claim and that run's own eventual
+  // `agent_settled` (idle once it fires) resolve it correctly either order.
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!ctx.isIdle()) return undefined;
     loop.endPrompt();
     return undefined;
   });
