@@ -44,6 +44,7 @@ import type {
   ObservedAction,
 } from "./conformance.js";
 import { evaluateEffectiveDeny, parseDenyScope, prohibitedAttempt } from "./deny.js";
+import { detectAgentSkillLoad } from "./skill-detection.js";
 import type { SkillSelected } from "./skill-detection.js";
 
 /** The pure adjudicator's signature — injectable so tests can spy on the harness call. */
@@ -201,6 +202,18 @@ export class HarnessConformanceChecker implements ConformanceChecker {
         return {
           conformant: true,
           reason: `no active skill — conformance not applicable; "${action.toolName}" deferred to the other gates`,
+        };
+      }
+      // Bootstrap (#70 follow-up): a SKILL.md read with no skill in force is the one
+      // action that ESTABLISHES a skill, not one taken under it. Fail-closing it here (as
+      // every other unscoped action is, under strict mode) means an agent could never
+      // start a skill by reading it — only `/skill:` would ever work. Defer to the
+      // planner's own admission (`GovernedLoop.noteSkillSelected`/`adjudicateSkill`)
+      // instead of judging it by conformance, same as a skill already in force still is.
+      if (detectAgentSkillLoad(action.toolName, action.input)) {
+        return {
+          conformant: true,
+          reason: "bootstrap SKILL.md read with no active skill — admitted via planner selection, not conformance (requireActiveSkill)",
         };
       }
       // Strict mode: only ever act within a declared skill → fail-closed with no skill.
