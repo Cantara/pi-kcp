@@ -48,7 +48,7 @@ class FakePi {
     return { stdout: '{"schemaVersion":1,"kind":"plan","task":"ship"}', stderr: "", code: 0, killed: false };
   }
 
-  async fire(event: string, payload: any, ctx: any = { cwd: "/repo", hasUI: false }): Promise<any> {
+  async fire(event: string, payload: any, ctx: any = { cwd: "/repo", hasUI: false, isIdle: () => true }): Promise<any> {
     const list = this.handlers.get(event) ?? [];
     let result: any;
     for (const handler of list) result = await handler(payload, ctx);
@@ -153,7 +153,7 @@ describe("register() event wiring", () => {
     const result = await pi.fire(
       "input",
       { type: "input", text: "/skill:deploy go", source: "interactive" },
-      { cwd: "/repo" },
+      { cwd: "/repo", isIdle: () => true },
     );
     expect(result).toEqual({ action: "continue" });
   });

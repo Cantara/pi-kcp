@@ -1023,13 +1023,21 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   });
 
   pi.on("input", async (event, ctx) => {
-    // A genuine new prompt boundary, not a mid-run steer/follow-up: `streamingBehavior` is
-    // only set for those (delivered into a live run with no new `before_agent_start` /
-    // `turn_start` sequence to follow), so treating one as a prompt boundary would wrongly
-    // end an in-force skill selection mid-prompt (ref #71). Detect user-forced skills
-    // (#28) and reset the prompt-scoped skill slot only for a real new prompt — regardless
-    // of source, so an extension-driven prompt (Pi's `sendUserMessage`) is covered too.
-    if (event.streamingBehavior === undefined) {
+    // A genuine new prompt boundary, not a mid-run steer/follow-up/poisoned re-entry.
+    // `event.streamingBehavior` is NOT a reliable discriminator: Pi's `prompt()` passes
+    // `this.isStreaming ? options?.streamingBehavior : undefined` into `emitInput`
+    // (agent-session.js:~795) — a `prompt()` call made mid-run WITHOUT `streamingBehavior`
+    // (which Pi then rejects at :812-814, AFTER `input` has already fired) looks identical
+    // to a genuine idle prompt: `streamingBehavior` is `undefined` either way. `ctx.isIdle()`
+    // is Pi's own live run-state flag (`!session.isStreaming`), read at the moment this
+    // handler runs, so it is accurate for both cases this guards against: a mid-run call
+    // with no `streamingBehavior` (not idle — don't touch the in-force skill) and the
+    // settle race (Pi clears `_isAgentRunActive` before emitting `agent_settled`, so a new
+    // prompt started synchronously from an earlier `agent_settled` handler IS idle here,
+    // same as any other genuine new prompt). Detect user-forced skills (#28) and reset the
+    // prompt-scoped skill slot only when idle — regardless of source, so an
+    // extension-driven prompt (Pi's `sendUserMessage`) is covered too.
+    if (ctx.isIdle()) {
       loop.observeInput(event.text, getCommands());
     }
     if (event.source === "extension") return { action: "continue" as const };

@@ -45,10 +45,10 @@ class FakePi {
   async exec(): Promise<ExecResult> {
     return { stdout: "{}", stderr: "", code: 0, killed: false };
   }
-  async fire(event: string, payload: any, cwd: string): Promise<any> {
+  async fire(event: string, payload: any, cwd: string, isIdle = true): Promise<any> {
     let result: any;
     for (const handler of this.handlers.get(event) ?? []) {
-      result = await handler(payload, { cwd, hasUI: false });
+      result = await handler(payload, { cwd, hasUI: false, isIdle: () => isIdle });
     }
     return result;
   }
@@ -251,16 +251,22 @@ describe("an agent-driven skill selection survives the whole prompt (ref #67, #7
       expect((await probe("t3")).block).toBe(true);
 
       // agent_end: NOT the prompt boundary (ref #71). Pi may retry/compact/continue after
-      // this with no new `input`. The skill must still be scoped in that continuation.
+      // this with no new `input` — real `continue()` re-emits `agent_start` (turn index
+      // reset to 0, agent-session.js:412-414) and THEN `turn_start`, not `turn_start`
+      // alone. The skill must still be scoped in that continuation.
       await pi.fire("agent_end", { messages: [{ role: "assistant" }] }, dirLenient);
+      await pi.fire("agent_start", {}, dirLenient);
       await pi.fire("turn_start", { turnIndex: 2, timestamp: 0 }, dirLenient);
       expect((await probe("t4")).block).toBe(true);
 
       // agent_settled: the true prompt boundary. Only now does the skill clear.
       await pi.fire("agent_settled", {}, dirLenient);
 
-      // A steer arriving after the prompt has already settled must not resurrect
-      // anything either — `streamingBehavior` skips `observeInput` entirely.
+      // A steer-flagged input arriving after the prompt has already settled is, in real
+      // Pi, impossible to distinguish from an ordinary idle prompt: Pi's own `isStreaming
+      // ? options?.streamingBehavior : undefined` forces `streamingBehavior` to `undefined`
+      // whenever idle, whatever the caller asked for — so Pi treats this as a genuine new
+      // prompt too (`ctx.isIdle()` is true here, nothing left active to resurrect anyway).
       await pi.fire("input", { text: "steer this", source: "rpc", streamingBehavior: "steer" }, dirLenient);
       await pi.fire("turn_start", { turnIndex: 3, timestamp: 0 }, dirLenient);
       expect(await probe("t4b")).toBeUndefined();
@@ -299,9 +305,43 @@ describe("an agent-driven skill selection survives the whole prompt (ref #67, #7
     );
     expect((await probe("t2")).block).toBe(true);
 
-    // A steer arrives mid-run: `streamingBehavior` is set, so this must not be treated
-    // as a new prompt boundary (ref #71) — the active skill must still be scoped after it.
-    await pi.fire("input", { text: "also check this", source: "rpc", streamingBehavior: "steer" }, dirLenient);
+    // A steer arrives mid-run: `streamingBehavior` is set AND Pi is not idle (still
+    // streaming), so this must not be treated as a new prompt boundary (ref #71) — the
+    // active skill must still be scoped after it.
+    await pi.fire("input", { text: "also check this", source: "rpc", streamingBehavior: "steer" }, dirLenient, false);
+    expect((await probe("t3")).block).toBe(true);
+  });
+
+  it("through register(): a mid-run prompt() call with no streamingBehavior does not clear the active skill (#71 mid-run-poison fix)", async () => {
+    // Reproduces the confirmed finding: Pi's `prompt()` emits `input` with
+    // `streamingBehavior` undefined whenever the CALLER omits it, even mid-run
+    // (`this.isStreaming ? options?.streamingBehavior : undefined`,
+    // agent-session.js:~795) — Pi only rejects the call afterward (:812-814), after
+    // `input` has already fired. `event.streamingBehavior === undefined` alone cannot
+    // tell this apart from a genuine idle prompt; `ctx.isIdle()` can (false here, a run
+    // is still active).
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    const probe = (toolCallId: string) =>
+      pi.fire("tool_call", { toolCallId, toolName: "write", input: { path: "/tmp/x", content: "x" } }, dirLenient);
+
+    await pi.fire("input", { text: "run the deploy checklist", source: "rpc" }, dirLenient);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "run the deploy checklist", systemPrompt: "you are pi", systemPromptOptions: {} },
+      dirLenient,
+    );
+    await pi.fire("agent_start", {}, dirLenient);
+    await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "read", input: { path: `${dirLenient}/skills/deploy/SKILL.md` } },
+      dirLenient,
+    );
+    expect((await probe("t2")).block).toBe(true);
+
+    // The poisoned mid-run call: no `streamingBehavior`, and NOT idle.
+    await pi.fire("input", { text: "poisoned re-entry", source: "rpc" }, dirLenient, false);
     expect((await probe("t3")).block).toBe(true);
   });
 
@@ -502,7 +542,7 @@ describe("the skill and the planner trace persist across beginTurn (no per-round
     expect(refused).toHaveLength(1);
   });
 
-  it("the trace itself is prompt-scoped: it survives beginTurn, and only endPrompt clears it (ref #69)", () => {
+  it("the trace itself is prompt-scoped: it survives beginTurn, and only endPrompt clears it (ref #69)", async () => {
     const loop = new GovernedLoop();
     loop.beginTurn(0);
     loop.setTracedUnits(
@@ -510,13 +550,15 @@ describe("the skill and the planner trace persist across beginTurn (no per-round
     );
 
     // The trace refuses `deploy` — this still holds after a turn boundary with no new
-    // trace, because beginTurn does not clear it.
+    // trace, because beginTurn does not clear it. An agent-driven read mid-prompt (not a
+    // new `input`) is judged against it, same as any later round of the same prompt.
     loop.beginTurn(1);
-    loop.observeInput("/skill:deploy go", commands);
+    await loop.evaluateToolCall("read", { path: "skills/deploy/SKILL.md" }, { cwd: "/repo" });
     expect(loop.currentSkill()).toBeUndefined();
 
-    // Only the prompt boundary clears it, so a fresh prompt with no trace is admitted
-    // rather than silently refused by a stale one.
+    // Only the prompt boundary clears it, so a fresh prompt's `input` is not bound by the
+    // PREVIOUS prompt's trace (#71 stale-trace fix) — `observeInput` clears it, and the
+    // forced skill is admitted until this new prompt's own plan stage runs.
     loop.endPrompt();
     loop.beginTurn(2);
     loop.observeInput("/skill:deploy go", commands);

@@ -70,7 +70,7 @@ class FakePi {
   async fire(event: string, payload: any, cwd: string): Promise<any> {
     let result: any;
     for (const handler of this.handlers.get(event) ?? []) {
-      result = await handler(payload, { cwd, hasUI: false });
+      result = await handler(payload, { cwd, hasUI: false, isIdle: () => true });
     }
     return result;
   }
@@ -204,5 +204,51 @@ describe("the plan stage gates skills through the planner", () => {
     const notice = pi.sent.find((m) => (m.content ?? "").includes("was not loaded"));
     expect(notice).toBeDefined();
     expect(notice!.content).toContain("deploy-v2");
+  });
+
+  it("does not leak a previous prompt's trace into a new prompt's forced skill (#71 stale-trace fix)", async () => {
+    const { pi, loop } = wire();
+    pi.trace = traceJson([{ gate: "temporal", passed: false, detail: "expired" }]);
+
+    // Prompt 1: forced, then refused by its OWN plan stage's trace.
+    await upToPlan(pi);
+    expect(loop.currentSkill()).toBeUndefined();
+
+    await pi.fire("agent_start", {}, dir);
+    await pi.fire("agent_settled", {}, dir);
+
+    // Prompt 2: the SAME forced skill, before ITS OWN plan stage has run. Prompt 1's
+    // refusing trace must not still apply to it — `input` clears the stale trace, so the
+    // force is admitted (ungoverned) until this prompt's own `before_agent_start` sets a
+    // fresh one.
+    await pi.fire("input", { text: "/skill:deploy ship it again", source: "user" }, dir);
+    expect(loop.currentSkill()?.skillName).toBe("deploy");
+  });
+
+  it("a settle race does not let a stale trace leak into the newer prompt (#71 follow-up)", async () => {
+    const { pi, loop } = wire();
+    pi.trace = traceJson([{ gate: "temporal", passed: true, detail: "ok" }]);
+
+    await upToPlan(pi);
+    await pi.fire("agent_start", {}, dir);
+    expect(loop.currentSkill()?.skillName).toBe("deploy");
+
+    // Before run A's own `agent_settled` handler runs, prompt B's `input` AND
+    // `before_agent_start` already ran — as if an earlier-registered extension's
+    // `agent_settled` handler started B synchronously before ours executed. A different
+    // force, with no declared unit for it in A's (or B's, same fixture) trace at all —
+    // proving its admission came from ITS OWN (trace-less-for-it) plan stage, not a
+    // leftover from A.
+    await pi.fire("input", { text: "/skill:narrow look around", source: "user" }, dir);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "look around", systemPrompt: "y", systemPromptOptions: {} },
+      dir,
+    );
+    expect(loop.currentSkill()?.skillName).toBe("narrow");
+
+    // Run A's delayed settle now runs. It must not wipe B's just-installed selection.
+    await pi.fire("agent_settled", {}, dir);
+    expect(loop.currentSkill()?.skillName).toBe("narrow");
   });
 });
