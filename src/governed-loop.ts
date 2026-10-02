@@ -669,27 +669,36 @@ export class GovernedLoop {
    * {@link consumedGeneration} looks (it does not get invalidated by a settle, only ever
    * advanced by the next confirmed `before_agent_start`) — so this also clears.
    *
-   * Assessed and deliberately NOT guarded against: two runs overlapping on the SAME
-   * `GovernedLoop` (a new run's `agent_start` landing before an older run's own
-   * `agent_settled`/`endPrompt` has executed — reachable only if some other extension's
-   * `agent_settled` handler starts a new prompt without awaiting it, then stays suspended
-   * on something else long enough for that new prompt to reach `agent_start` before Pi's
-   * emit loop reaches our handler for the old `agent_settled`). `runActive`,
-   * `runStartGeneration` and `consumedGeneration` are single ambient fields, not per-run
-   * tokens — Pi's `AgentStartEvent`/`AgentSettledEvent` carry no run id to key per-run
-   * state on, so there is no way to tell, from inside either method, which of two
-   * overlapping runs a given call belongs to. Making {@link onAgentStart} reclaim the
-   * generation on a `consumedGeneration` mismatch even while `runActive` (i.e. acting as if
-   * this were the overlap, not a plain continue) was tried and rejected: it lets the OLDER
-   * run's later, delayed {@link endPrompt} call read the NEWER run's now-reassigned
-   * `runStartGeneration` as its own and wipe the newer run's still-in-flight selection —
-   * trading a bounded "stays active a little longer than it should" leak for an
-   * unbounded "a live run loses its scope mid-flight" one. The former is the same class of
-   * residual risk already accepted for the deep-nested settle case; the latter is strictly
-   * worse. Left as-is.
+   * Overlap (#71 follow-up, reproduced live): two runs overlapping on the SAME
+   * `GovernedLoop` — a newer run's `agent_start` landing before an older run's own
+   * `agent_settled`/`endPrompt` has executed, reachable whenever an earlier extension's
+   * `agent_settled` handler `await`s a nested `pi.sendUserMessage()` (the natural
+   * pattern, since Pi's own run flag is already false at that point). Without a fix, the
+   * nested run's `onAgentStart` no-ops (`runActive` still set from the older run) and
+   * never claims its own generation, so its OWN `endPrompt` later finds a stale
+   * `runStartGeneration` mismatch and never clears either — permanently leaking into
+   * whatever runs next. `src/index.ts`'s `agent_settled` handler now skips `endPrompt`
+   * entirely while `!ctx.isIdle()` (a newer run has already set Pi's flag), so the older
+   * run's settle usually never reaches here until the newer run has genuinely finished —
+   * but the two can still interleave when a handler fire-and-forgets the nested prompt
+   * instead of awaiting it, so this guard below still matters on its own. See the
+   * `runActive` branch.
    */
   onAgentStart(): void {
-    if (this.runActive) return;
+    if (this.runActive) {
+      // This run's `before_agent_start` confirmed a generation the currently-claimed run
+      // (`runStartGeneration`) never saw — a newer run starting while an older one is
+      // still marked active. Claim it now, WITHOUT clearing (this run's own `input`
+      // already set the right activeSkill/tracedUnits): that makes THIS run's own
+      // eventual `endPrompt` recognize itself as current and clear correctly, instead of
+      // the stale older claim leaving a mismatch nothing ever resolves. A plain
+      // continue()/retry (same generation this run already claimed) does not match and
+      // falls through unchanged.
+      if (this.consumedGeneration === this.promptGeneration && this.runStartGeneration !== this.promptGeneration) {
+        this.runStartGeneration = this.promptGeneration;
+      }
+      return;
+    }
     const noConfirmedInput = this.consumedGeneration !== this.promptGeneration;
     const alreadyClaimed = this.runStartGeneration === this.promptGeneration;
     if (noConfirmedInput || alreadyClaimed) {
@@ -717,6 +726,11 @@ export class GovernedLoop {
    * instead of this one's. `undefined` (Pi's real order, or a caller driving the loop
    * directly without ever calling {@link onAgentStart}) means no generation was ever
    * claimed, so there is nothing to guard against — clear unconditionally, as before.
+   *
+   * Unchanged by the overlap fix (#71 follow-up): {@link onAgentStart}'s overlap branch
+   * already reassigns `runStartGeneration` to whichever run is newest before its own
+   * settle ever reaches here, so THIS method's existing comparison is sufficient — a
+   * separate "whose settle is this" token is not needed.
    */
   endPrompt(): void {
     if (this.runStartGeneration === undefined || this.runStartGeneration === this.promptGeneration) {

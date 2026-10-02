@@ -660,4 +660,143 @@ describe("prompt-generation tracking across agent_start/agent_settled (#71 follo
     );
     expect(decision).toBeUndefined();
   });
+
+  it("through register(): a settle nested inside an older run's agent_settled handler still clears correctly (#71 overlap fix)", async () => {
+    // Reproduces the confirmed leak: an earlier extension's `agent_settled` handler
+    // `await`s a nested `pi.sendUserMessage()` (the natural pattern, since Pi's own run
+    // flag is already false by the time `agent_settled` fires), so prompt B's ENTIRE
+    // cycle — input, before_agent_start, agent_start, a scoped tool_call, and B's OWN
+    // agent_settled — runs before OUR handler for A's original `agent_settled` event
+    // ever gets control (Pi's emit loop calls handlers for one event in registration
+    // order; an earlier handler's `await` blocks everything after it, us included).
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    await pi.fire("input", { text: "/skill:deploy go", source: "rpc" }, dir);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "/skill:deploy go", systemPrompt: "you are pi", systemPromptOptions: {} },
+      dir,
+    );
+    await pi.fire("agent_start", {}, dir);
+    expect(
+      await pi.fire("tool_call", { toolCallId: "a1", toolName: "read", input: { path: "docs/deploy.md" } }, dir),
+    ).toBeUndefined();
+
+    // Nested prompt B, fully resolved — including B's OWN agent_settled — before our
+    // handler for A's agent_settled ever runs.
+    await pi.fire("input", { text: "/skill:deploy go again", source: "rpc" }, dir);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "/skill:deploy go again", systemPrompt: "you are pi", systemPromptOptions: {} },
+      dir,
+    );
+    await pi.fire("agent_start", {}, dir);
+    expect(
+      await pi.fire("tool_call", { toolCallId: "b1", toolName: "read", input: { path: "docs/deploy.md" } }, dir),
+    ).toBeUndefined();
+    await pi.fire("agent_settled", {}, dir); // B's own settle
+
+    // Our handler for A's ORIGINAL `agent_settled` event finally runs.
+    await pi.fire("agent_settled", {}, dir);
+
+    // A later, unrelated run with no `input` of its own must not inherit anything.
+    await pi.fire("agent_start", {}, dir);
+    await pi.fire("turn_start", { turnIndex: 0, timestamp: 0 }, dir);
+    const decision = await pi.fire(
+      "tool_call",
+      { toolCallId: "t1", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(decision.block).toBe(true);
+    expect(decision.reason).toContain(STRICT_REFUSAL);
+  });
+
+  it("through register(): overlap where the newer run settles first — it is never wiped mid-run and clears after its own settle", async () => {
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    await pi.fire("input", { text: "/skill:deploy go", source: "rpc" }, dir);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "/skill:deploy go", systemPrompt: "you are pi", systemPromptOptions: {} },
+      dir,
+    );
+    await pi.fire("agent_start", {}, dir);
+
+    // B starts, nested, before A's own settle reaches us.
+    await pi.fire("input", { text: "/skill:deploy go again", source: "rpc" }, dir);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "/skill:deploy go again", systemPrompt: "you are pi", systemPromptOptions: {} },
+      dir,
+    );
+    await pi.fire("agent_start", {}, dir);
+
+    // B is active and correctly scoped.
+    expect(
+      await pi.fire("tool_call", { toolCallId: "b1", toolName: "read", input: { path: "docs/deploy.md" } }, dir),
+    ).toBeUndefined();
+
+    // B settles first.
+    await pi.fire("agent_settled", {}, dir);
+    const afterB = await pi.fire(
+      "tool_call",
+      { toolCallId: "b2", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(afterB.block).toBe(true);
+    expect(afterB.reason).toContain(STRICT_REFUSAL);
+
+    // A's delayed settle (second) is a harmless no-op.
+    await pi.fire("agent_settled", {}, dir);
+    const afterA = await pi.fire(
+      "tool_call",
+      { toolCallId: "b3", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(afterA.block).toBe(true);
+  });
+
+  it("through register(): overlap where the older run's delayed settle fires first — the newer run is never wiped mid-run and clears after its own settle", async () => {
+    const pi = new FakePi();
+    register(pi.asApi());
+
+    await pi.fire("input", { text: "/skill:deploy go", source: "rpc" }, dir);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "/skill:deploy go", systemPrompt: "you are pi", systemPromptOptions: {} },
+      dir,
+    );
+    await pi.fire("agent_start", {}, dir);
+
+    // B starts (nested), still mid-run (not yet settled) when A's delayed settle reaches us.
+    await pi.fire("input", { text: "/skill:deploy go again", source: "rpc" }, dir);
+    await pi.fire(
+      "before_agent_start",
+      { prompt: "/skill:deploy go again", systemPrompt: "you are pi", systemPromptOptions: {} },
+      dir,
+    );
+    await pi.fire("agent_start", {}, dir);
+
+    // A's delayed settle fires while B is still active — Pi is NOT idle (B is running),
+    // so this must be skipped entirely rather than clearing B's state.
+    await pi.fire("agent_settled", {}, dir, false);
+    const duringB = await pi.fire(
+      "tool_call",
+      { toolCallId: "b1", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(duringB).toBeUndefined();
+
+    // B's own settle (genuinely idle) now clears correctly.
+    await pi.fire("agent_settled", {}, dir);
+    const afterB = await pi.fire(
+      "tool_call",
+      { toolCallId: "b2", toolName: "read", input: { path: "docs/deploy.md" } },
+      dir,
+    );
+    expect(afterB.block).toBe(true);
+    expect(afterB.reason).toContain(STRICT_REFUSAL);
+  });
 });
