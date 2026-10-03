@@ -19,6 +19,7 @@ import {
   erroredStages,
   expectedStagesFor,
   type GovernanceMode,
+  runStageBody,
   type Stage,
   type StageOutcome,
   TurnLedger,
@@ -211,6 +212,29 @@ export class GovernedLoop {
   private tracedUnits: TracedUnit[] | undefined;
   /** How much of the cycle this turn is accountable for. */
   private mode: GovernanceMode = "full";
+  /**
+   * Which of `turn_start`/`before_agent_start` opened the round now starting, until the
+   * OTHER one consumes it — `undefined` the rest of the time (including mid-round, once
+   * both have run). See {@link openRoundFromTurnStart}'s doc for why this exists and why it
+   * must work regardless of which one fires first.
+   */
+  private roundOpener: "turn_start" | "before_agent_start" | undefined;
+  /**
+   * The correlationId `agent_end`'s late-arriving synthesize/ground stages should attach
+   * to — see {@link recordLateStage}'s doc for the companion event-ordering surprise this
+   * exists for (Pi 0.80.6 fires `agent_end` AFTER `turn_end`, not before). Set once per
+   * prompt by whichever of `openRoundFromTurnStart`/`openRoundFromBeforeAgentStart` actually
+   * opens the round — NOT by every `beginTurn` (called again for every tool round within one
+   * prompt; `agent_end` fires once per prompt, so this must not move with it).
+   */
+  private promptCorrelationId: string | undefined;
+  /**
+   * True from {@link finishTurn} until the next {@link beginTurn} — disambiguates, for
+   * {@link recordLateStage}, "the live turn" from "the turn `this.turn`/`this.ledger` still
+   * happen to reference because nothing newer has begun yet." See that method's doc for why
+   * the distinction is load-bearing, not cosmetic.
+   */
+  private turnClosed = false;
 
   constructor(options: GovernedLoopOptions = {}) {
     this.checker = options.checker ?? passThroughChecker;
@@ -245,6 +269,7 @@ export class GovernedLoop {
     this.turn = mintTraceparent(turnIndex);
     this.activeSkill = undefined;
     this.mode = mode;
+    this.turnClosed = false;
     this.ledger = new TurnLedger({
       turnIndex: turnIndex ?? 0,
       correlationId: this.turn.correlationId,
@@ -260,11 +285,114 @@ export class GovernedLoop {
   }
 
   /**
+   * Open a round from `turn_start`, which alone carries Pi's real per-round `turnIndex`.
+   *
+   * `turn_start` and `before_agent_start` are dispatched on genuinely different paths —
+   * `turn_start` through the generic extension-event pipeline, `before_agent_start` as a
+   * direct call inside `prompt()` — with no ordering guarantee between them. Confirmed by
+   * tracing real timestamps: Pi 0.80.6 fires `before_agent_start` FIRST; this repo's own
+   * test fakes (and plausibly other Pi versions) fire `turn_start` first. Whichever fires
+   * first genuinely opens the round; the other must reuse it, not replace it — replacing it
+   * unconditionally either way loses whichever stage the first one already recorded (`plan`,
+   * if `before_agent_start` went first).
+   *
+   * If `before_agent_start` already opened this round (with a placeholder index, since that
+   * event carries none of its own), this patches in the real one rather than discarding that
+   * ledger. Deliberately does NOT touch `promptCorrelationId` (see
+   * {@link openRoundFromBeforeAgentStart}'s doc for why only `before_agent_start` may) — a
+   * round-2+ call here, for a later tool round of the SAME prompt with no `before_agent_start`
+   * firing again, must leave it pointing at round 1, where `agent_end`'s stages belong.
+   */
+  openRoundFromTurnStart(turnIndex: number, mode: GovernanceMode): TurnContext {
+    if (this.roundOpener === "before_agent_start") {
+      this.ledger.setTurnIndex(turnIndex);
+      this.roundOpener = undefined;
+      return this.turn;
+    }
+    const ctx = this.beginTurn(turnIndex, mode);
+    this.roundOpener = "turn_start";
+    return ctx;
+  }
+
+  /**
+   * Open a round from `before_agent_start`, which carries no `turnIndex` of its own — see
+   * {@link openRoundFromTurnStart}'s doc for the full mechanism this is the other half of.
+   * If `turn_start` already opened this round (this repo's own test fakes' order), reuses it
+   * as-is — `turn_start`'s real index is already correct, nothing to patch.
+   *
+   * Sets `promptCorrelationId` in BOTH branches, unlike `openRoundFromTurnStart`: this is the
+   * one call with "fires exactly once per prompt, regardless of how many tool rounds follow"
+   * cardinality (`before_agent_start`'s own, real Pi property) — the right, and only reliable,
+   * place to mark "this round is where `agent_end`'s late synthesize/ground stages belong."
+   */
+  openRoundFromBeforeAgentStart(mode: GovernanceMode): TurnContext {
+    if (this.roundOpener === "turn_start") {
+      this.roundOpener = undefined;
+      this.promptCorrelationId = this.turn.correlationId;
+      return this.turn;
+    }
+    const ctx = this.beginTurn(undefined, mode);
+    this.roundOpener = "before_agent_start";
+    this.promptCorrelationId = this.turn.correlationId;
+    return ctx;
+  }
+
+  /**
    * Run one stage of the governed cycle, recording its outcome. Never throws — see
    * {@link TurnLedger.run} for why an error must not reach Pi.
    */
   async stage(stage: Stage, body: () => Promise<StageOutcome | void>): Promise<void> {
     await this.ledger.run(stage, body);
+  }
+
+  /**
+   * Record a stage for the CURRENT prompt's turn, wherever that turn now is — still live,
+   * or already closed and pushed to {@link recentTurns}. For `agent_end`'s synthesize/ground
+   * stages: Pi 0.80.6 fires `agent_end` AFTER `turn_end`, the same real event-ordering
+   * surprise {@link openRoundFromTurnStart}'s doc describes at the other end of the turn, so
+   * by the time these stages are ready to record, `finishTurn` has usually already
+   * snapshotted and pushed the record they belong in. A plain {@link stage} call would
+   * silently land in whatever turn happens to be live NOW — a later tool round of the SAME
+   * prompt, or nothing at all — never the turn synthesize/ground actually describe.
+   *
+   * Correlates by {@link promptCorrelationId} (set once per prompt, only by
+   * `openRoundFromBeforeAgentStart` — see its own doc for why only that call may), not by
+   * "the current turn," which is exactly the value this exists to not trust for a
+   * late-arriving stage. A silent no-op if that turn isn't live and isn't in the (bounded)
+   * history window either — aged out, or no turn was ever opened this prompt (mode wasn't
+   * `full`) — matching {@link stage}'s own "a broken/absent gate degrades the turn, it does
+   * not throw" posture.
+   *
+   * Deliberately does NOT invoke {@link GovernedLoopHooks.onTurnRecorded} again for a
+   * patched, already-closed turn — that hook fires exactly once per turn by contract, and at
+   * least one real consumer (`wrapper-cli.ts`'s persona-turn ledger) signs and appends a
+   * ledger line on every call; a second notification for the same turn would double-sign it.
+   * A late patch is visible to anything that re-reads {@link recentTurns} fresh (this is
+   * exactly what `/kcp evidence` does) — not to something that cached the hook's first,
+   * possibly-incomplete snapshot.
+   */
+  async recordLateStage(stage: Stage, body: () => Promise<StageOutcome | void>): Promise<void> {
+    const targetId = this.promptCorrelationId;
+    if (targetId === undefined) return;
+    // `this.turn`/`this.ledger` still reference the target turn in TWO different cases that
+    // must not be conflated: genuinely still open (no `finishTurn` yet), and just closed by
+    // `finishTurn` with no NEWER turn having begun since (the common single-round case — the
+    // multi-round case this was originally verified against masks this, since a second
+    // `beginTurn` moves `this.turn` on and correctly forces the history-search branch below;
+    // a single-round prompt never does). `turnClosed` disambiguates: true the instant
+    // `finishTurn` snapshots and pushes, false again the instant any `beginTurn` runs. Only
+    // the genuinely-still-open case may mutate the live ledger directly — mutating it after
+    // `finishTurn` already copied its decisions into the pushed history entry would update
+    // the live object silently, with nothing readable ever seeing the change.
+    if (this.turn.correlationId === targetId && !this.turnClosed) {
+      await this.ledger.run(stage, body);
+      return;
+    }
+    const index = this.history.findIndex((record) => record.correlationId === targetId);
+    if (index === -1) return;
+    const entry = this.history[index];
+    const decision = await runStageBody(stage, targetId, body);
+    this.history[index] = { ...entry, decisions: [...entry.decisions, decision] };
   }
 
   /**
@@ -339,11 +467,19 @@ export class GovernedLoop {
    * Close the turn: emit its stage record and, when the cycle did not complete under
    * governance, say so explicitly. A turn that quietly skipped the gate is the failure
    * mode this exists to make impossible.
+   *
+   * `onTurnRecorded`/`onUngoverned` fire exactly once, here, with whatever is known at THIS
+   * instant — an honest snapshot, not a final one. `agent_end`'s synthesize/ground stages
+   * (see {@link recordLateStage}) routinely arrive after this call, on real Pi 0.80.6, and
+   * can complete the picture — but only for a caller that re-reads {@link recentTurns} or
+   * calls {@link ungovernedReason} on it fresh afterward. A caller that only ever looks at
+   * this call's own hook arguments will not see the completed record.
    */
   finishTurn(): TurnRecord {
     const record = this.ledger.record();
     this.history.push(record);
     if (this.history.length > TURN_HISTORY_LIMIT) this.history.shift();
+    this.turnClosed = true;
     this.hooks.onTurnRecorded?.(record);
     const reason = ungovernedReason(record);
     if (reason) this.hooks.onUngoverned?.(record, reason);

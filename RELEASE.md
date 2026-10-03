@@ -1,5 +1,60 @@
 # Release notes
 
+## 0.12.2 — the plan/synthesize/ground stages actually record now — 2026-09-28
+
+`/kcp evidence` on a from-scratch full-mode governed turn reported `UNGOVERNED: plan,
+synthesize, ground` on every single real turn against Pi 0.80.6 — not a config problem,
+an event-ordering one. Traced with real timestamps: `before_agent_start` (plan) fires
+BEFORE `turn_start` has run (they're dispatched on genuinely different paths inside Pi),
+so plan's mode check always saw the stale default; `agent_end` (synthesize, ground)
+fires AFTER `turn_end` has already snapshotted and pushed the turn's record, so those
+two stages recorded into a ledger already gone.
+
+Fixed with two coordination mechanisms in `GovernedLoop` (`openRoundFromTurnStart`/
+`openRoundFromBeforeAgentStart`, `recordLateStage`) that work regardless of which order
+a given Pi version fires these in — this repo's own existing tests use the OTHER order,
+and still pass unchanged. Verified live (`turn 0 — governed`, all seven stages, real
+Claude Sonnet 5, real tool use) and by 5 new deterministic tests covering exactly the
+single-round edge case live verification alone would have missed.
+
+## 0.12.1 — resolve kcp-agent from local node_modules/.bin — 2026-09-28
+
+`findAgentInvocation` only checked two hardcoded global install paths (Homebrew,
+`~/.npm-global`) plus a bare `which kcp-agent`. A project that installs kcp-agent as
+an ordinary dependency — the way this repo's own devDependency on kcp-harness does —
+had no local candidate that could ever match, and silently fell back to
+tool-boundary-only governance even with a real, working install two directories away.
+Found live, running a governed session against a project with only a local install:
+`/kcp evidence` came back empty after a real turn, full mode unable to find the
+planner it needs.
+
+Fixed: walk from `cwd` up to the filesystem root checking
+`<dir>/node_modules/.bin/kcp-agent` at each level, the same resolution order
+`npm run`/`bunx` use. An explicit `agentCli`/`KCP_AGENT_CLI` override still wins.
+4 new tests — `findAgentInvocation` had none before this.
+
+## 0.12.0 — federation, navigation, CLI-primary — 2026-09-28
+
+Four small, docs/config-only changes, made locally on 2026-08-25 and only now
+merged (this entry and the version bump were missing too — `package.json` and
+this file had stopped tracking real tags after 0.8.0, even though v0.9.0
+through v0.11.0 shipped in between; restoring the lockstep here rather than
+letting it drift further).
+
+- **`knowledge.yaml` gains a `federation.manifest` block.** pi-kcp implements
+  the spec's federation clause but had never declared its own manifest
+  entries — unreferenceable without an `id` per §3.6, now fixed with a
+  `kcp-spec` foundation entry.
+- **`CLAUDE.md`** — a thin navigation hub pointing at `knowledge.yaml` (the
+  canonical agent-navigable index) and `kcp-skill` (shared governed-skill
+  authoring conventions), plus a pass over local skills against current repo
+  state.
+- **README** — kcp-agent's CLI made explicit as the primary interface for
+  both humans and agents; `/kcp` and friends are an ergonomics wrapper, not
+  the primary way in.
+- `knowledge.yaml.sig` — re-signed automatically by this push (sign-kcp.yml),
+  superseding the stale manual update these commits originally shipped with.
+
 ## 0.8.0 — the playbook's deny, and the deny that is final — 2026-07-31
 
 KCP v0.32 (RFC-0030, §4.3b) in the runtime, in two halves.

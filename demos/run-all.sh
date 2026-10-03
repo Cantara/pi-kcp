@@ -15,6 +15,10 @@
 #   • 11 is fully deterministic (the real planner's money_budget gate).
 #   • 12/13/14 transpile pi-kcp's real wallet + governed-loop seam with `bun`; if
 #     `bun` is absent they print the prereq and exit 0 (never fail the suite).
+# 16 is the first demo to drive a REAL Pi coding-agent session (real `pi`
+# process, real model) rather than a scripted client; it needs `pi` installed
+# and a working OPENAI_API_KEY or ANTHROPIC_API_KEY — absent either, it prints
+# the prereq and exits 0 (never fails the suite).
 set -uo pipefail
 cd "$(dirname "$0")"
 
@@ -39,6 +43,7 @@ demos=(
   "13-runaway-spender/run.mjs"
   "14-signed-receipts/run.mjs"
   "15-governed-composition/run.mjs"
+  "16-govern-the-coding-agent/run.mjs"
 )
 
 fails=0

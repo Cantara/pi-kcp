@@ -109,9 +109,40 @@ export interface TurnLedgerOptions {
   expectedStages?: readonly Stage[];
 }
 
+/**
+ * Run one stage body and produce its decision. Never rethrows: an error that escapes to Pi
+ * is an error that vanishes, so it is captured as an `errored` decision instead — the same
+ * reasoning {@link TurnLedger.run} documents, factored out so a decision can be produced for
+ * a turn whose ledger has already closed (see {@link GovernedLoop.recordLateStage}) without
+ * duplicating the try/catch.
+ */
+export async function runStageBody(
+  stage: Stage,
+  correlationId: string,
+  body: () => Promise<StageOutcome | void>,
+): Promise<StageDecision> {
+  try {
+    const outcome = (await body()) ?? {};
+    return {
+      stage,
+      status: outcome.status ?? "ok",
+      correlationId,
+      ...(outcome.reason ? { reason: outcome.reason } : {}),
+      ...(outcome.detail ? { detail: outcome.detail } : {}),
+    };
+  } catch (error) {
+    return {
+      stage,
+      status: "errored",
+      correlationId,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 /** Accumulates one turn's stage decisions. One ledger per turn. */
 export class TurnLedger {
-  private readonly turnIndex: number;
+  private turnIndex: number;
   private readonly correlationId: string;
   private readonly expectedStages: readonly Stage[];
   private readonly decisions: StageDecision[] = [];
@@ -123,28 +154,23 @@ export class TurnLedger {
   }
 
   /**
-   * Run one stage and record its outcome. Never rethrows: an error that escapes to Pi is
-   * an error that vanishes, so it is captured as an `errored` decision instead. Later
+   * Correct the turn index after the fact — for the one real case where it's discovered
+   * late: `before_agent_start` opens a round with no index of its own (it carries none),
+   * and `turn_start`'s real one arrives moments later. See governed-loop.ts's
+   * {@link GovernedLoop.openRoundFromTurnStart} for the full mechanism. Never changes
+   * `correlationId` or `decisions` — those are already correct regardless of which event
+   * opened the round.
+   */
+  setTurnIndex(turnIndex: number): void {
+    this.turnIndex = turnIndex;
+  }
+
+  /**
+   * Run one stage and record its outcome. Never rethrows — see {@link runStageBody}. Later
    * stages still run — a broken stage degrades the turn, it does not abandon it.
    */
   async run(stage: Stage, body: () => Promise<StageOutcome | void>): Promise<void> {
-    try {
-      const outcome = (await body()) ?? {};
-      this.decisions.push({
-        stage,
-        status: outcome.status ?? "ok",
-        correlationId: this.correlationId,
-        ...(outcome.reason ? { reason: outcome.reason } : {}),
-        ...(outcome.detail ? { detail: outcome.detail } : {}),
-      });
-    } catch (error) {
-      this.decisions.push({
-        stage,
-        status: "errored",
-        correlationId: this.correlationId,
-        reason: error instanceof Error ? error.message : String(error),
-      });
-    }
+    this.decisions.push(await runStageBody(stage, this.correlationId, body));
   }
 
   record(): TurnRecord {
