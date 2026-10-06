@@ -1,6 +1,6 @@
 import { access, readFile } from "node:fs/promises";
-import { constants } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { constants, existsSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { type GovernanceDecision, GovernedLoop } from "./governed-loop.js";
 import { missingStages, type GateFailurePosture, type GovernanceMode, TOOL_STAGES, type TurnRecord, ungovernedReason } from "./runtime.js";
@@ -451,23 +451,54 @@ async function commandInvocation(pi: ExtensionAPI, command: string): Promise<Age
 }
 
 /**
- * `<dir>/node_modules/.bin/kcp-agent` for `cwd` and every ancestor up to the filesystem
- * root — the same directory-walk Node's own module resolution uses, so a project that
- * declares kcp-agent as a (possibly transitive, e.g. via kcp-harness) dependency resolves
- * it the way `npm run`/`bunx` would, without needing it globally installed or on PATH.
- *
- * This was the missing case: `findAgentInvocation`'s only local checks were two hardcoded
- * GLOBAL install locations (Homebrew, `~/.npm-global`) plus a bare `which kcp-agent` — so a
- * project that `bun install`/`npm install`s kcp-agent locally (the common case; that's what
- * this repo's own devDependency on kcp-harness does) had no candidate that could ever match,
- * and fell through to "kcp-agent CLI was not found" even with a real, working install two
- * directories away in `node_modules/.bin/`.
+ * Project root for local tool lookup: the nearest ancestor of `cwd` (inclusive) that contains
+ * `.git` (a directory, or a file for git worktrees/submodules). With no `.git` anywhere above,
+ * the root is `cwd` itself, so the search never extends beyond the working directory.
  */
-function localNodeModulesBinPaths(cwd: string, binName: string): string[] {
+export function findProjectRoot(cwd: string): string {
+  const start = resolve(cwd);
+  let dir = start;
+  for (;;) {
+    if (existsSync(resolve(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return start;
+    dir = parent;
+  }
+}
+
+/**
+ * `<dir>/node_modules/.bin/<binName>` for `cwd` and each ancestor up to, and including, the
+ * project root (see `findProjectRoot`) — so a repo's own (possibly transitive, e.g. via
+ * kcp-harness) devDependency resolves the way `npm run`/`bunx` would, including from nested
+ * workspace packages.
+ *
+ * SECURITY: kcp-agent is the governance decision-maker, so this lookup must never execute a
+ * binary the project owner did not put inside the project. The walk is therefore bounded at the
+ * project root (a planted `/tmp/node_modules/.bin/kcp-agent` or a parent-directory binary above
+ * a cloned repo is never a candidate), and each candidate's realpath must stay inside the
+ * project root's realpath (a symlink that points out of the repo is rejected). Candidates that
+ * do not exist are omitted.
+ */
+export function localNodeModulesBinPaths(cwd: string, binName: string): string[] {
+  const root = findProjectRoot(cwd);
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return [];
+  }
   const paths: string[] = [];
   let dir = resolve(cwd);
   for (;;) {
-    paths.push(resolve(dir, "node_modules", ".bin", binName));
+    const candidate = resolve(dir, "node_modules", ".bin", binName);
+    try {
+      const real = realpathSync(candidate);
+      const rel = relative(realRoot, real);
+      if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) paths.push(candidate);
+    } catch {
+      // Missing or dangling: not a candidate.
+    }
+    if (dir === root) break;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
