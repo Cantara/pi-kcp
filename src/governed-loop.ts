@@ -250,6 +250,7 @@ export class GovernedLoop {
    * the distinction is load-bearing, not cosmetic.
    */
   private turnClosed = false;
+  /**
    * Monotonic count of genuine new-prompt boundaries observed (#71/#67 race, #71-leak).
    * Bumped only by a real {@link observeInput} (never a mid-run steer). Paired with
    * {@link runStartGeneration} so {@link onAgentStart} and {@link endPrompt} can tell
