@@ -270,7 +270,7 @@ describe("register() default wiring is harness-backed and fail-closed", () => {
 
     await pi.fire("turn_start", { type: "turn_start", turnIndex: 0, timestamp: Date.now() }, { cwd: dir });
     // Force the skill via input (sets the active skill without going through the gate).
-    await pi.fire("input", { type: "input", text: "/skill:deploy", source: "interactive" }, { cwd: dir });
+    await pi.fire("input", { type: "input", text: "/skill:deploy", source: "interactive" }, { cwd: dir, isIdle: () => true });
 
     const allowed = await pi.fire(
       "tool_call",

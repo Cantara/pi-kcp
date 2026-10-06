@@ -19,6 +19,15 @@ class RejectingChecker implements ConformanceChecker {
   }
 }
 
+/** A stub checker that accepts everything, capturing every action it saw, in order. */
+class AcceptingChecker implements ConformanceChecker {
+  seen: ObservedAction[] = [];
+  async check(action: ObservedAction) {
+    this.seen.push(action);
+    return { conformant: true, reason: "ok" };
+  }
+}
+
 describe("conformance seam (#27)", () => {
   it("PassThroughChecker allows any action", async () => {
     const result = await new PassThroughChecker().check();
@@ -41,14 +50,17 @@ describe("conformance seam (#27)", () => {
   });
 
   it("stamps the observed action with the turn correlation id and skill context", async () => {
-    const checker = new RejectingChecker();
+    const checker = new AcceptingChecker();
     const loop = new GovernedLoop({ checker });
     loop.beginTurn(0);
-    // Reading a SKILL.md establishes skill context for the turn.
+    // The read of a SKILL.md is itself checked with no skill context yet (#70: it is
+    // judged by the scope already in force, not the one it is about to establish) — only
+    // once it is conformant does the skill become active for calls after it.
     await loop.evaluateToolCall("read", { path: "/repo/skills/deploy/SKILL.md" }, ctx);
     await loop.evaluateToolCall("bash", { command: "ls" }, ctx);
-    expect(checker.seen?.correlationId).toBe(loop.currentCorrelationId());
-    expect(isTraceparent(checker.seen!.correlationId)).toBe(true);
-    expect(checker.seen?.skillContext?.skillName).toBe("deploy");
+    expect(checker.seen[0]?.skillContext).toBeUndefined();
+    expect(checker.seen[1]?.correlationId).toBe(loop.currentCorrelationId());
+    expect(isTraceparent(checker.seen[1]!.correlationId)).toBe(true);
+    expect(checker.seen[1]?.skillContext?.skillName).toBe("deploy");
   });
 });
