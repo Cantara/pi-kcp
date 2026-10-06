@@ -1,5 +1,6 @@
 import { access, readFile } from "node:fs/promises";
-import { constants, existsSync, realpathSync } from "node:fs";
+import { constants, existsSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { type GovernanceDecision, GovernedLoop } from "./governed-loop.js";
@@ -506,16 +507,111 @@ export function localNodeModulesBinPaths(cwd: string, binName: string): string[]
   return paths;
 }
 
-export async function findAgentInvocation(pi: ExtensionAPI, cwd: string, config: KcpConfig): Promise<AgentInvocation | undefined> {
-  const configured = [config.agentCli, process.env.KCP_AGENT_CLI]
-    .filter((candidate): candidate is string => Boolean(candidate));
-  const knownPaths = [
-    ...localNodeModulesBinPaths(cwd, "kcp-agent"),
+/**
+ * User-level configuration, read from `~/.pi/kcp.json`. Only these keys are honoured, and only
+ * from this file: the repository cannot write to the user's home directory, which is what
+ * makes it a valid source of trust. Anything malformed or unreadable counts as "no config".
+ */
+export interface UserAgentConfig {
+  agentCli?: string;
+  trustLocalAgent?: boolean;
+  trustedProjects?: string[];
+}
+
+export function readUserAgentConfig(): UserAgentConfig {
+  try {
+    const value: unknown = JSON.parse(readFileSync(resolve(process.env.HOME || homedir(), CONFIG_FILE), "utf8"));
+    if (!isRecord(value)) return {};
+    return {
+      agentCli: typeof value.agentCli === "string" && value.agentCli.trim() !== "" ? value.agentCli : undefined,
+      trustLocalAgent: value.trustLocalAgent === true,
+      trustedProjects: Array.isArray(value.trustedProjects)
+        ? value.trustedProjects.filter((entry): entry is string => typeof entry === "string")
+        : [],
+    };
+  } catch {
+    return {};
+  }
+}
+
+function safeRealpath(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the user has explicitly trusted repo-local kcp-agent resolution for this project.
+ * Sources: `KCP_TRUST_LOCAL_AGENT=1`, `trustLocalAgent: true` in the user-level config, or the
+ * project's real path in the user-level `trustedProjects`. The repo's own `.pi/kcp.json` is
+ * deliberately never consulted.
+ */
+export function isLocalAgentTrusted(cwd: string, user: UserAgentConfig = readUserAgentConfig()): boolean {
+  if (process.env.KCP_TRUST_LOCAL_AGENT === "1") return true;
+  if (user.trustLocalAgent === true) return true;
+  const root = safeRealpath(findProjectRoot(cwd));
+  if (!root) return false;
+  return (user.trustedProjects ?? []).some((entry) => safeRealpath(entry) === root);
+}
+
+const TRUST_HINT =
+  "To trust a repo-local kcp-agent, set KCP_TRUST_LOCAL_AGENT=1, or add this project's path to trustedProjects (or set trustLocalAgent: true) in ~/.pi/kcp.json. A trustLocalAgent key in the repo's own .pi/kcp.json is ignored.";
+
+const announcedUntrusted = new Set<string>();
+
+/** Testing seam: forget which untrusted-agent notices were already raised. */
+export function resetTrustNotices(): void {
+  announcedUntrusted.clear();
+}
+
+export interface FindAgentOptions {
+  /** Where the once-per-session "untrusted repo-local agent skipped" notice goes. */
+  notify?: (message: string) => void;
+}
+
+let trustNoticeSink: ((message: string) => void) | undefined;
+
+export async function findAgentInvocation(
+  pi: ExtensionAPI,
+  cwd: string,
+  config: KcpConfig,
+  options: FindAgentOptions = {},
+): Promise<AgentInvocation | undefined> {
+  const notify = options.notify ?? trustNoticeSink ?? ((message: string) => console.warn(message));
+  const user = readUserAgentConfig();
+  const trusted = isLocalAgentTrusted(cwd, user);
+
+  // config.agentCli comes from the repo's .pi/kcp.json, so it is repo-controlled.
+  const repoLocal: string[] = [];
+  if (config.agentCli) repoLocal.push(config.agentCli);
+  repoLocal.push(...localNodeModulesBinPaths(cwd, "kcp-agent"));
+
+  const skipped: string[] = [];
+  if (!trusted) {
+    for (const candidate of repoLocal) {
+      const pathLike = candidate.includes("/") || /\.(?:cjs|mjs|js)$/.test(candidate);
+      if (!pathLike || (await access(candidate, constants.R_OK).then(() => true, () => false))) skipped.push(candidate);
+    }
+    const fresh = skipped.filter((candidate) => !announcedUntrusted.has(candidate));
+    if (fresh.length > 0) {
+      for (const candidate of fresh) announcedUntrusted.add(candidate);
+      notify(
+        `pi-kcp: skipped untrusted repo-local kcp-agent (${fresh.join(", ")}). kcp-agent makes the governance decisions, so a repository must not choose it. ${TRUST_HINT}`,
+      );
+    }
+  }
+
+  const candidates = [
+    process.env.KCP_AGENT_CLI,
+    user.agentCli,
+    ...(trusted ? repoLocal : []),
     "/opt/homebrew/lib/node_modules/kcp-harness/node_modules/kcp-agent/dist/cli.js",
     `${process.env.HOME ?? ""}/.npm-global/lib/node_modules/kcp-harness/node_modules/kcp-agent/dist/cli.js`,
-  ];
+  ].filter((candidate): candidate is string => Boolean(candidate));
 
-  for (const candidate of [...configured, ...knownPaths]) {
+  for (const candidate of candidates) {
     if (!candidate.includes("/") && !/\.(?:cjs|mjs|js)$/.test(candidate)) {
       const invocation = await commandInvocation(pi, candidate);
       if (invocation) return invocation;
@@ -529,12 +625,13 @@ export async function findAgentInvocation(pi: ExtensionAPI, cwd: string, config:
     }
   }
 
+  // PATH fallback: not covered by the trust gate (see the proposal discussion, gap (c)).
   return commandInvocation(pi, "kcp-agent");
 }
 
-function agentNotFoundMessage(config: KcpConfig): string {
+export function agentNotFoundMessage(config: KcpConfig): string {
   const configured = config.agentCli ? ` Configured path: ${config.agentCli}.` : "";
-  return `kcp-agent CLI was not found.${configured} Set agentCli in .pi/kcp.json, set KCP_AGENT_CLI, or install the kcp-agent executable.`;
+  return `kcp-agent CLI was not found.${configured} Set agentCli in ~/.pi/kcp.json, set KCP_AGENT_CLI, or install the kcp-agent executable. ${TRUST_HINT}`;
 }
 
 async function runKcpAgent(
@@ -649,6 +746,11 @@ async function runInit(pi: ExtensionAPI, cwd: string, config: KcpConfig): Promis
     throw new Error(`Manifest already exists at ${manifest}; /kcp init will not overwrite it.`);
   }
   return runKcpAgent(pi, cwd, ["init", cwd], config);
+}
+
+/** Route the once-per-session untrusted-agent notice through the host's notification channel. */
+function routeTrustNotices(ctx: Parameters<typeof show>[0]): void {
+  trustNoticeSink = (message) => show(ctx, message, "warning");
 }
 
 function show(ctx: { hasUI: boolean; ui: { notify(message: string, level: "info" | "warning" | "error"): void } }, message: string, level: "info" | "warning" | "error" = "info"): void {
@@ -769,6 +871,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   pi.registerCommand("kcp", {
     description: "Use KCP memory and deterministic knowledge plans",
     handler: async (args, ctx) => {
+      routeTrustNotices(ctx);
       const [subcommand, ...rest] = args.trim().split(/\s+/).filter(Boolean);
       const loaded = await loadConfig(ctx.cwd);
       const config = loaded.config;
@@ -911,7 +1014,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
         const configLine = loaded.status === "invalid"
           ? `invalid — ${loaded.errors.join("; ")}`
           : `${loaded.status}${config.enabled ? "" : " (disabled)"}`;
-        show(ctx, `pi-kcp health\nconfig: ${configLine}\nkcp-memory: ${memory}\nkcp-agent: ${agent?.label ?? "unavailable — set agentCli or install kcp-agent"}`);
+        show(ctx, `pi-kcp health\nconfig: ${configLine}\nkcp-memory: ${memory}\nkcp-agent: ${agent?.label ?? "unavailable — set KCP_AGENT_CLI, install kcp-agent, or trust a repo-local one (KCP_TRUST_LOCAL_AGENT=1 / ~/.pi/kcp.json)"}`);
         return;
       }
 
@@ -937,6 +1040,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // which races ahead of this on Pi 0.80.6 and may already have opened the turn this
   // handler would otherwise open again, discarding `plan`'s just-recorded decision.
   pi.on("turn_start", async (event, ctx) => {
+    routeTrustNotices(ctx);
     const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
     mode = resolvedMode;
     loop.openRoundFromTurnStart(event.turnIndex, mode);
@@ -961,6 +1065,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // `turn_start` hasn't already (see {@link GovernedLoop.openRoundFromTurnStart}'s doc for the
   // full, order-agnostic mechanism this and `turn_start` share).
   pi.on("before_agent_start", async (event, ctx) => {
+    routeTrustNotices(ctx);
     const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
     if (resolvedMode !== "full") return undefined;
     // Keep the shared turn state current for anything that fires in the (short) window
