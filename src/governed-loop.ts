@@ -3,7 +3,10 @@
  *
  * A small orchestration unit that:
  *   - mints/holds a per-turn correlation id (W3C traceparent, #29),
- *   - observes skill selection (#28) and remembers the active skill for the turn,
+ *   - observes skill selection (#28) and remembers the active skill for the PROMPT
+ *     (`input` … `agent_settled`), not just the Pi turn/round it was selected in (#67, #71),
+ *   - checks a SKILL.md read against the skill already in force before letting it swap in,
+ *     with a user-forced selection taking precedence over an agent-driven one (#70),
  *   - evaluates each `tool_call` against an injectable {@link ConformanceChecker} and
  *     blocks non-conformant calls before they execute,
  *   - composes recall → plan → emit events → publish, threading the correlation id.
@@ -19,6 +22,7 @@ import {
   erroredStages,
   expectedStagesFor,
   type GovernanceMode,
+  runStageBody,
   type Stage,
   type StageOutcome,
   TurnLedger,
@@ -185,17 +189,25 @@ export class GovernedLoop {
   private readonly sessionId: string;
   private sequence = 0;
   private turn: TurnContext;
-  private activeSkill: SkillSelected | undefined;
   /**
-   * The user-forced `/skill:<name>` selection in force (source: `"user"`), remembered
-   * across turn boundaries. Pi emits `input` BEFORE the first `turn_start`, and
-   * `turn_start` fires again on every tool round — so a forced selection that lived only
-   * in {@link activeSkill} was wiped by {@link beginTurn} before the first `tool_call`
-   * could ever see it, and the `/skill:` forcing feature was unreachable for any
-   * RPC-driven client. {@link beginTurn} re-selects this after its reset; the next user
-   * `input` replaces or clears it, and a planner-gate revocation ends it.
+   * The skill selection in force for the current PROMPT (`input` … `agent_settled`), not
+   * the current Pi turn — whether user-forced (`/skill:<name>`) or agent-driven (a
+   * `SKILL.md` read).
+   *
+   * Precedence: a user-forced selection holds until a planner-gate revocation
+   * ({@link setTracedUnits}) or the prompt ends ({@link endPrompt}); an agent-driven read
+   * only fills this slot when no user force is already in effect (#70 — an agent must not
+   * silently displace a deliberate `/skill:` choice; see {@link noteSkillSelected}).
+   *
+   * {@link beginTurn} does NOT touch this — a Pi turn is one LLM round, and `turn_start`
+   * fires again for every round of the same prompt (retries and `continue()` included, via
+   * `agent_end` with no new `input` — see docs/extensions.md's agent lifecycle). The
+   * genuine boundaries are `input` (a real new prompt clears/replaces it —
+   * {@link observeInput}, skipped for a mid-run steer/follow-up) and `agent_settled` (the
+   * prompt is truly over — {@link endPrompt}). #67/#71 are two turn/run-scoped stand-ins
+   * for this same prompt boundary that predate this field's current lifetime.
    */
-  private forcedSkill: SkillSelected | undefined;
+  private activeSkill: SkillSelected | undefined;
   private ledger: TurnLedger;
   /** Input digests of tool calls approved this turn, keyed by Pi's toolCallId. */
   private approvals = new Map<string, string>();
@@ -207,10 +219,65 @@ export class GovernedLoop {
   private prohibitedDigests = new Set<string>();
   /** Recent completed turn records, oldest first. Bounded — this is a window, not a store. */
   private history: TurnRecord[] = [];
-  /** The planner's traced units for this turn, when the plan stage produced them. */
+  /**
+   * The planner's traced units for the current PROMPT (#69) — set once at the plan stage
+   * (`before_agent_start`), not cleared per turn, and consulted by every selection made
+   * anywhere in the prompt, in whatever round. Cleared at {@link endPrompt}.
+   */
   private tracedUnits: TracedUnit[] | undefined;
   /** How much of the cycle this turn is accountable for. */
   private mode: GovernanceMode = "full";
+  /**
+   * Which of `turn_start`/`before_agent_start` opened the round now starting, until the
+   * OTHER one consumes it — `undefined` the rest of the time (including mid-round, once
+   * both have run). See {@link openRoundFromTurnStart}'s doc for why this exists and why it
+   * must work regardless of which one fires first.
+   */
+  private roundOpener: "turn_start" | "before_agent_start" | undefined;
+  /**
+   * The correlationId `agent_end`'s late-arriving synthesize/ground stages should attach
+   * to — see {@link recordLateStage}'s doc for the companion event-ordering surprise this
+   * exists for (Pi 0.80.6 fires `agent_end` AFTER `turn_end`, not before). Set once per
+   * prompt by whichever of `openRoundFromTurnStart`/`openRoundFromBeforeAgentStart` actually
+   * opens the round — NOT by every `beginTurn` (called again for every tool round within one
+   * prompt; `agent_end` fires once per prompt, so this must not move with it).
+   */
+  private promptCorrelationId: string | undefined;
+  /**
+   * True from {@link finishTurn} until the next {@link beginTurn} — disambiguates, for
+   * {@link recordLateStage}, "the live turn" from "the turn `this.turn`/`this.ledger` still
+   * happen to reference because nothing newer has begun yet." See that method's doc for why
+   * the distinction is load-bearing, not cosmetic.
+   */
+  private turnClosed = false;
+  /**
+   * Monotonic count of genuine new-prompt boundaries observed (#71/#67 race, #71-leak).
+   * Bumped only by a real {@link observeInput} (never a mid-run steer). Paired with
+   * {@link runStartGeneration} so {@link onAgentStart} and {@link endPrompt} can tell
+   * whether the run they are bracketing still belongs to the newest observed prompt, or
+   * has already been superseded by one.
+   */
+  private promptGeneration = 0;
+  /** Whether a Pi run (`agent_start` … `agent_settled`) is currently under way. */
+  private runActive = false;
+  /**
+   * The {@link promptGeneration} claimed by the outermost `agent_start` of the run
+   * currently in flight (or the most recently finished one). `undefined` before the
+   * first run ever starts.
+   */
+  private runStartGeneration: number | undefined;
+  /**
+   * The {@link promptGeneration} for which `before_agent_start` has actually run (#71
+   * early-failure leak). Pi's real order for a genuine prompt is `input` →
+   * `before_agent_start` → `agent_start`; `input` alone only *observes* a prompt, it does
+   * not confirm one will ever run — `prompt()` can still throw before `before_agent_start`
+   * (model/auth validation) or during it. A `triggerTurn` run skips `input` and
+   * `before_agent_start` entirely and goes straight to `agent_start`
+   * (`_runAgentPrompt(appMessage)`, agent-session.js:1069), so its absence is the
+   * discriminator {@link onAgentStart} needs: a run only "owns" the latest observed input
+   * if `before_agent_start` actually ran for it.
+   */
+  private consumedGeneration: number | undefined;
 
   constructor(options: GovernedLoopOptions = {}) {
     this.checker = options.checker ?? passThroughChecker;
@@ -230,21 +297,21 @@ export class GovernedLoop {
   }
 
   /**
-   * Start a new turn: mint a fresh correlation id, clear the skill, open a ledger scoped to
-   * what `mode` is accountable for.
+   * Start a new Pi turn (one LLM round): mint a fresh correlation id and open a ledger
+   * scoped to what `mode` is accountable for. Resets only ROUND artifacts — the
+   * correlation id, the ledger, this round's approvals and prohibited-input record.
    *
-   * An *agent-driven* skill selection is per-turn — tied to the `SKILL.md` read that made
-   * it — so the clear applies to it unconditionally, as before. A *user-forced* selection
-   * is per-prompt: `input` fires before the first `turn_start` and `turn_start` fires
-   * again on every tool round, so clearing it here would wipe it between detection and
-   * the first `tool_call` (with `requireActiveSkill` that turned every forced-skill
-   * prompt into a strict-mode refusal). It is re-selected after the reset instead — and
-   * each turn's plan stage can still refuse or revoke it via {@link setTracedUnits}.
+   * Does NOT touch {@link activeSkill} or {@link tracedUnits}: both are prompt-scoped, and
+   * `turn_start` is not a prompt boundary — it fires again for every round of the same
+   * prompt, including a retry or `continue()` after `agent_end` with no new `input` in
+   * between (#71). Clearing and re-selecting them here was the #67/#71 workaround; the
+   * actual prompt boundaries are `input` ({@link observeInput}) and `agent_settled`
+   * ({@link endPrompt}).
    */
   beginTurn(turnIndex?: number, mode: GovernanceMode = "full"): TurnContext {
     this.turn = mintTraceparent(turnIndex);
-    this.activeSkill = undefined;
     this.mode = mode;
+    this.turnClosed = false;
     this.ledger = new TurnLedger({
       turnIndex: turnIndex ?? 0,
       correlationId: this.turn.correlationId,
@@ -252,11 +319,60 @@ export class GovernedLoop {
     });
     this.approvals.clear();
     this.prohibitedDigests.clear();
-    this.tracedUnits = undefined;
-    // Re-select the user-forced skill for the new turn (the trace was just cleared, so
-    // admission defers to this turn's plan stage — gating stays per-turn, not skipped).
-    if (this.forcedSkill) this.noteSkillSelected(this.forcedSkill);
     return this.turn;
+  }
+
+  /**
+   * Open a round from `turn_start`, which alone carries Pi's real per-round `turnIndex`.
+   *
+   * `turn_start` and `before_agent_start` are dispatched on genuinely different paths —
+   * `turn_start` through the generic extension-event pipeline, `before_agent_start` as a
+   * direct call inside `prompt()` — with no ordering guarantee between them. Confirmed by
+   * tracing real timestamps: Pi 0.80.6 fires `before_agent_start` FIRST; this repo's own
+   * test fakes (and plausibly other Pi versions) fire `turn_start` first. Whichever fires
+   * first genuinely opens the round; the other must reuse it, not replace it — replacing it
+   * unconditionally either way loses whichever stage the first one already recorded (`plan`,
+   * if `before_agent_start` went first).
+   *
+   * If `before_agent_start` already opened this round (with a placeholder index, since that
+   * event carries none of its own), this patches in the real one rather than discarding that
+   * ledger. Deliberately does NOT touch `promptCorrelationId` (see
+   * {@link openRoundFromBeforeAgentStart}'s doc for why only `before_agent_start` may) — a
+   * round-2+ call here, for a later tool round of the SAME prompt with no `before_agent_start`
+   * firing again, must leave it pointing at round 1, where `agent_end`'s stages belong.
+   */
+  openRoundFromTurnStart(turnIndex: number, mode: GovernanceMode): TurnContext {
+    if (this.roundOpener === "before_agent_start") {
+      this.ledger.setTurnIndex(turnIndex);
+      this.roundOpener = undefined;
+      return this.turn;
+    }
+    const ctx = this.beginTurn(turnIndex, mode);
+    this.roundOpener = "turn_start";
+    return ctx;
+  }
+
+  /**
+   * Open a round from `before_agent_start`, which carries no `turnIndex` of its own — see
+   * {@link openRoundFromTurnStart}'s doc for the full mechanism this is the other half of.
+   * If `turn_start` already opened this round (this repo's own test fakes' order), reuses it
+   * as-is — `turn_start`'s real index is already correct, nothing to patch.
+   *
+   * Sets `promptCorrelationId` in BOTH branches, unlike `openRoundFromTurnStart`: this is the
+   * one call with "fires exactly once per prompt, regardless of how many tool rounds follow"
+   * cardinality (`before_agent_start`'s own, real Pi property) — the right, and only reliable,
+   * place to mark "this round is where `agent_end`'s late synthesize/ground stages belong."
+   */
+  openRoundFromBeforeAgentStart(mode: GovernanceMode): TurnContext {
+    if (this.roundOpener === "turn_start") {
+      this.roundOpener = undefined;
+      this.promptCorrelationId = this.turn.correlationId;
+      return this.turn;
+    }
+    const ctx = this.beginTurn(undefined, mode);
+    this.roundOpener = "before_agent_start";
+    this.promptCorrelationId = this.turn.correlationId;
+    return ctx;
   }
 
   /**
@@ -265,6 +381,56 @@ export class GovernedLoop {
    */
   async stage(stage: Stage, body: () => Promise<StageOutcome | void>): Promise<void> {
     await this.ledger.run(stage, body);
+  }
+
+  /**
+   * Record a stage for the CURRENT prompt's turn, wherever that turn now is — still live,
+   * or already closed and pushed to {@link recentTurns}. For `agent_end`'s synthesize/ground
+   * stages: Pi 0.80.6 fires `agent_end` AFTER `turn_end`, the same real event-ordering
+   * surprise {@link openRoundFromTurnStart}'s doc describes at the other end of the turn, so
+   * by the time these stages are ready to record, `finishTurn` has usually already
+   * snapshotted and pushed the record they belong in. A plain {@link stage} call would
+   * silently land in whatever turn happens to be live NOW — a later tool round of the SAME
+   * prompt, or nothing at all — never the turn synthesize/ground actually describe.
+   *
+   * Correlates by {@link promptCorrelationId} (set once per prompt, only by
+   * `openRoundFromBeforeAgentStart` — see its own doc for why only that call may), not by
+   * "the current turn," which is exactly the value this exists to not trust for a
+   * late-arriving stage. A silent no-op if that turn isn't live and isn't in the (bounded)
+   * history window either — aged out, or no turn was ever opened this prompt (mode wasn't
+   * `full`) — matching {@link stage}'s own "a broken/absent gate degrades the turn, it does
+   * not throw" posture.
+   *
+   * Deliberately does NOT invoke {@link GovernedLoopHooks.onTurnRecorded} again for a
+   * patched, already-closed turn — that hook fires exactly once per turn by contract, and at
+   * least one real consumer (`wrapper-cli.ts`'s persona-turn ledger) signs and appends a
+   * ledger line on every call; a second notification for the same turn would double-sign it.
+   * A late patch is visible to anything that re-reads {@link recentTurns} fresh (this is
+   * exactly what `/kcp evidence` does) — not to something that cached the hook's first,
+   * possibly-incomplete snapshot.
+   */
+  async recordLateStage(stage: Stage, body: () => Promise<StageOutcome | void>): Promise<void> {
+    const targetId = this.promptCorrelationId;
+    if (targetId === undefined) return;
+    // `this.turn`/`this.ledger` still reference the target turn in TWO different cases that
+    // must not be conflated: genuinely still open (no `finishTurn` yet), and just closed by
+    // `finishTurn` with no NEWER turn having begun since (the common single-round case — the
+    // multi-round case this was originally verified against masks this, since a second
+    // `beginTurn` moves `this.turn` on and correctly forces the history-search branch below;
+    // a single-round prompt never does). `turnClosed` disambiguates: true the instant
+    // `finishTurn` snapshots and pushes, false again the instant any `beginTurn` runs. Only
+    // the genuinely-still-open case may mutate the live ledger directly — mutating it after
+    // `finishTurn` already copied its decisions into the pushed history entry would update
+    // the live object silently, with nothing readable ever seeing the change.
+    if (this.turn.correlationId === targetId && !this.turnClosed) {
+      await this.ledger.run(stage, body);
+      return;
+    }
+    const index = this.history.findIndex((record) => record.correlationId === targetId);
+    if (index === -1) return;
+    const entry = this.history[index];
+    const decision = await runStageBody(stage, targetId, body);
+    this.history[index] = { ...entry, decisions: [...entry.decisions, decision] };
   }
 
   /**
@@ -339,11 +505,19 @@ export class GovernedLoop {
    * Close the turn: emit its stage record and, when the cycle did not complete under
    * governance, say so explicitly. A turn that quietly skipped the gate is the failure
    * mode this exists to make impossible.
+   *
+   * `onTurnRecorded`/`onUngoverned` fire exactly once, here, with whatever is known at THIS
+   * instant — an honest snapshot, not a final one. `agent_end`'s synthesize/ground stages
+   * (see {@link recordLateStage}) routinely arrive after this call, on real Pi 0.80.6, and
+   * can complete the picture — but only for a caller that re-reads {@link recentTurns} or
+   * calls {@link ungovernedReason} on it fresh afterward. A caller that only ever looks at
+   * this call's own hook arguments will not see the completed record.
    */
   finishTurn(): TurnRecord {
     const record = this.ledger.record();
     this.history.push(record);
     if (this.history.length > TURN_HISTORY_LIMIT) this.history.shift();
+    this.turnClosed = true;
     this.hooks.onTurnRecorded?.(record);
     const reason = ungovernedReason(record);
     if (reason) this.hooks.onUngoverned?.(record, reason);
@@ -360,15 +534,18 @@ export class GovernedLoop {
     return this.turn.correlationId;
   }
 
-  /** The skill currently active for this turn, if any. */
+  /** The skill currently active for this prompt, if any. */
   currentSkill(): SkillSelected | undefined {
     return this.activeSkill;
   }
 
   /**
-   * Install the planner's traced units for this turn and re-adjudicate whatever skill is
-   * already active. A forced skill is selected at `input`, before the plan stage runs — so
-   * the verdict can arrive after the selection, and must be able to revoke it.
+   * Install the planner's traced units for the current PROMPT (#69) and re-adjudicate
+   * whatever skill is already active. A forced skill is selected at `input`, before the
+   * plan stage (`before_agent_start`) runs — so the verdict can arrive after the
+   * selection, and must be able to revoke it. Once set, the trace is consulted by every
+   * selection anywhere in the prompt (mid-prompt agent reads included), not just the round
+   * it was produced in.
    *
    * Returns the skill that was revoked, if any.
    */
@@ -380,30 +557,44 @@ export class GovernedLoop {
     const admission = this.adjudicateSkill(active);
     if (admission.admitted) return undefined;
 
+    // A revoked selection is ended for the rest of the prompt, not resurrected next
+    // turn — there is no re-selection at the turn boundary any more to re-arm it.
     this.activeSkill = undefined;
-    // A revoked user-forced selection is ended, not resurrected: without this,
-    // beginTurn's re-selection would re-arm it every turn and the gate would refuse it
-    // again every turn — a refusal loop instead of a decision.
-    if (active.source === "user") this.forcedSkill = undefined;
     this.hooks.onSkillRefused?.(active, admission.reason, admission);
     return active;
   }
 
-  /** The admission verdict for a skill against this turn's traced units. */
+  /** The admission verdict for a skill against this prompt's traced units. */
   adjudicateSkill(skill: SkillSelected): SkillAdmission {
-    // No trace means the plan stage did not run, not that everything is refused. Gating is
-    // opt-in; a missing verdict must not become a silent denial.
+    // No trace means the plan stage did not run this prompt, not that everything is
+    // refused. Gating is opt-in; a missing verdict must not become a silent denial.
     if (!this.tracedUnits) {
-      return { admitted: true, governed: false, reason: "no planner trace for this turn", failedGates: [] };
+      return { admitted: true, governed: false, reason: "no planner trace for this prompt", failedGates: [] };
     }
     return admitSkill(findTracedUnit(this.tracedUnits, skill), skill);
   }
 
   /**
-   * Record a skill selection and emit it — unless the planner's gates refuse it, in which
-   * case it never becomes active and the written reason is emitted instead (#28).
+   * Record a skill selection and emit it — unless precedence or the planner's gates refuse
+   * it, in which case it never becomes active (#28).
+   *
+   * Precedence (#70): a user-forced selection (`source: "user"`) always takes the slot. An
+   * agent-driven selection (`source: "agent"`, a `SKILL.md` read) fills the slot only when
+   * no user force is already active — it must not silently displace a deliberate
+   * `/skill:` choice. Whichever source wins, it then still needs the planner's admission.
    */
   private noteSkillSelected(event: SkillSelected): SkillSelected | undefined {
+    if (event.source === "agent" && this.activeSkill?.source === "user") {
+      // Visible, not silent (#70 follow-up): the swap was refused by precedence, not by
+      // a failed gate — still worth a distinct reason so callers can tell the two apart.
+      this.hooks.onSkillRefused?.(event, "a user-forced skill is active — an agent-driven read cannot displace it", {
+        admitted: false,
+        governed: false,
+        reason: "a user-forced skill is active — an agent-driven read cannot displace it",
+        failedGates: [],
+      });
+      return undefined;
+    }
     const admission = this.adjudicateSkill(event);
     if (!admission.admitted) {
       this.hooks.onSkillRefused?.(event, admission.reason, admission);
@@ -418,22 +609,147 @@ export class GovernedLoop {
    * Observe a user input line for a `/skill:<name>` forced-skill selection.
    * Returns the SkillSelected when detected (also emitted via hooks).
    *
-   * Each prompt stands alone: a new input replaces the previous forced selection, and an
-   * input without a `/skill:` prefix ends it — the forced skill governs every turn of the
-   * prompt it was issued for, and no further.
+   * Each genuine new prompt stands alone: a new input ends whatever {@link activeSkill}
+   * AND {@link tracedUnits} carried over from the previous prompt — forced or
+   * agent-driven, gated or not — and an input without a `/skill:` prefix leaves none in
+   * force. Clearing the trace too (stale-trace fix, #71 follow-up) matters because a new
+   * `/skill:` selected here is adjudicated via {@link adjudicateSkill}, which treats a
+   * stale trace from the PREVIOUS prompt as a real (and possibly wrong) verdict rather
+   * than "no trace yet" — the correct state until this prompt's own plan stage runs
+   * {@link setTracedUnits} and re-adjudicates. Callers must only invoke this for a real
+   * prompt boundary, not a mid-run steer/follow-up (`ctx.isIdle()` distinguishes them —
+   * see `src/index.ts`'s `input` handler); this method itself always resets, so calling it
+   * mid-run would wrongly end an in-force selection.
    */
   observeInput(text: string, commands: readonly SlashCommandInfo[] = []): SkillSelected | undefined {
+    this.activeSkill = undefined;
+    this.tracedUnits = undefined;
+    this.promptGeneration += 1;
     const forced = detectForcedSkill(text, commands);
-    this.forcedSkill = forced;
     return forced ? this.noteSkillSelected(forced) : undefined;
   }
 
   /**
+   * Mark that `before_agent_start` has actually run for the latest observed input (#71
+   * early-failure leak). `input` alone only *observes* a prompt — it does not confirm one
+   * will ever run: `prompt()` can still throw before `before_agent_start` at all (model/auth
+   * validation), or return early (`handled`), with no run and no `agent_settled` to follow.
+   * `before_agent_start` running is the earliest point at which Pi has committed to
+   * actually starting a run for this input, which is why {@link onAgentStart} uses it
+   * (rather than {@link observeInput} itself) as the "this run owns the latest input"
+   * discriminator.
+   */
+  onBeforeAgentStart(): void {
+    this.consumedGeneration = this.promptGeneration;
+  }
+
+  /**
+   * Mark the outermost start of a Pi run (`agent_start`) — NOT every `agent_start`: Pi
+   * re-emits it for each in-prompt retry/`continue()` too (no new `input` in between), and
+   * those must not re-enter this method (guarded by {@link runActive}).
+   *
+   * Closes a leak (#71 follow-up): if `prompt()` throws after `input` but before a run
+   * ever starts (model/auth validation, or `handled`), `agent_settled` never fires for it
+   * either, so {@link endPrompt} never runs — whatever {@link observeInput} set (or left
+   * over from before it) is still sitting there. A later run started with no `input` at
+   * all (e.g. `sendCustomMessage({ triggerTurn: true })`, which skips `input` and
+   * `before_agent_start` entirely and goes straight to `agent_start`) would otherwise
+   * silently inherit it. Fix: clear unless {@link onBeforeAgentStart} actually ran for the
+   * CURRENT {@link promptGeneration} — a run that starts without that confirmation has
+   * nothing of its own to inherit.
+   *
+   * (A handler that throws during `before_agent_start` does not abort the prompt or skip
+   * this confirmation: `emitBeforeAgentStart` try/catches each handler individually —
+   * runner.js:797-824 — so `before_agent_start` firing is a reliable signal that Pi has
+   * committed to starting a run, regardless of what any single handler does with it.)
+   *
+   * Second, independent guard: {@link runStartGeneration} matching the current
+   * {@link promptGeneration} means some earlier run already claimed this exact generation
+   * (and has since settled — {@link endPrompt} cleared then). A run starting again with
+   * that same generation has had no `input` of its own since, however
+   * {@link consumedGeneration} looks (it does not get invalidated by a settle, only ever
+   * advanced by the next confirmed `before_agent_start`) — so this also clears.
+   *
+   * Overlap (#71 follow-up, reproduced live): two runs overlapping on the SAME
+   * `GovernedLoop` — a newer run's `agent_start` landing before an older run's own
+   * `agent_settled`/`endPrompt` has executed, reachable whenever an earlier extension's
+   * `agent_settled` handler `await`s a nested `pi.sendUserMessage()` (the natural
+   * pattern, since Pi's own run flag is already false at that point). Without a fix, the
+   * nested run's `onAgentStart` no-ops (`runActive` still set from the older run) and
+   * never claims its own generation, so its OWN `endPrompt` later finds a stale
+   * `runStartGeneration` mismatch and never clears either — permanently leaking into
+   * whatever runs next. `src/index.ts`'s `agent_settled` handler now skips `endPrompt`
+   * entirely while `!ctx.isIdle()` (a newer run has already set Pi's flag), so the older
+   * run's settle usually never reaches here until the newer run has genuinely finished —
+   * but the two can still interleave when a handler fire-and-forgets the nested prompt
+   * instead of awaiting it, so this guard below still matters on its own. See the
+   * `runActive` branch.
+   */
+  onAgentStart(): void {
+    if (this.runActive) {
+      // This run's `before_agent_start` confirmed a generation the currently-claimed run
+      // (`runStartGeneration`) never saw — a newer run starting while an older one is
+      // still marked active. Claim it now, WITHOUT clearing (this run's own `input`
+      // already set the right activeSkill/tracedUnits): that makes THIS run's own
+      // eventual `endPrompt` recognize itself as current and clear correctly, instead of
+      // the stale older claim leaving a mismatch nothing ever resolves. A plain
+      // continue()/retry (same generation this run already claimed) does not match and
+      // falls through unchanged.
+      if (this.consumedGeneration === this.promptGeneration && this.runStartGeneration !== this.promptGeneration) {
+        this.runStartGeneration = this.promptGeneration;
+      }
+      return;
+    }
+    const noConfirmedInput = this.consumedGeneration !== this.promptGeneration;
+    const alreadyClaimed = this.runStartGeneration === this.promptGeneration;
+    if (noConfirmedInput || alreadyClaimed) {
+      this.activeSkill = undefined;
+      this.tracedUnits = undefined;
+    }
+    this.runStartGeneration = this.promptGeneration;
+    this.runActive = true;
+  }
+
+  /**
+   * End the prompt: clear whatever {@link activeSkill} and {@link tracedUnits} carried
+   * across this prompt's turns, forced or agent-driven. Pairs with Pi's `agent_settled`
+   * (fired once the run has *fully* settled — no automatic retry, compaction, or queued
+   * continuation will run; unlike `agent_end`, nothing after this reuses prompt state
+   * without a new `input`, so this is the only correct place to clear it — see #71).
+   *
+   * Race guard (#71 follow-up): `_emitAgentSettled` drops Pi's own run flag BEFORE it
+   * emits `agent_settled` to extensions, so an earlier-registered extension's handler for
+   * THIS SAME event can start a brand-new prompt (`input` → {@link observeInput}, which
+   * bumps {@link promptGeneration} and installs the new prompt's own skill) before our
+   * handler gets to run. Only clear when {@link promptGeneration} still matches the
+   * generation the ending run actually claimed at {@link onAgentStart} — a mismatch means
+   * a newer prompt already superseded it, and wiping now would delete that prompt's state
+   * instead of this one's. `undefined` (Pi's real order, or a caller driving the loop
+   * directly without ever calling {@link onAgentStart}) means no generation was ever
+   * claimed, so there is nothing to guard against — clear unconditionally, as before.
+   *
+   * Unchanged by the overlap fix (#71 follow-up): {@link onAgentStart}'s overlap branch
+   * already reassigns `runStartGeneration` to whichever run is newest before its own
+   * settle ever reaches here, so THIS method's existing comparison is sufficient — a
+   * separate "whose settle is this" token is not needed.
+   */
+  endPrompt(): void {
+    if (this.runStartGeneration === undefined || this.runStartGeneration === this.promptGeneration) {
+      this.activeSkill = undefined;
+      this.tracedUnits = undefined;
+    }
+    this.runActive = false;
+  }
+
+  /**
    * Evaluate a tool call at the governance boundary.
-   *  - detects agent skill loads (read of SKILL.md) and records them,
-   *  - builds an {@link ObservedAction} stamped with the turn correlation id + skill context,
-   *  - runs the injected conformance checker,
-   *  - returns a block decision when the checker deems the action non-conformant.
+   *  - builds an {@link ObservedAction} against whatever skill is ALREADY in force,
+   *    stamped with the turn correlation id + skill context,
+   *  - runs the injected conformance checker against that action,
+   *  - returns a block decision when the checker deems the action non-conformant,
+   *  - only once the call is conformant does a detected agent skill load (read of
+   *    SKILL.md) take effect (#70): the read is judged by the scope it was issued under,
+   *    and a blocked read swaps nothing.
    */
   async evaluateToolCall(
     toolName: string,
@@ -442,7 +758,6 @@ export class GovernedLoop {
     commands: readonly SlashCommandInfo[] = [],
   ): Promise<GovernanceDecision> {
     const skillLoad = detectAgentSkillLoad(toolName, input, commands);
-    if (skillLoad) this.noteSkillSelected(skillLoad);
 
     // A direct buy is a tool call carrying `{vendor, amount, currency}`. Attaching the
     // purchase facet makes the (purchase-aware) conformance checker adjudicate it against the
@@ -465,10 +780,15 @@ export class GovernedLoop {
         this.prohibitedDigests.add(digest(input));
         this.hooks.onProhibitedAttempt?.(action, verdict.prohibited);
       }
-      // A non-conformant purchase is blocked here — the wallet is never reached.
+      // A non-conformant purchase is blocked here — the wallet is never reached. A
+      // non-conformant SKILL.md read is blocked here too, and never becomes a selection.
       this.hooks.onBlocked?.(action, verdict.reason);
       return { block: true, reason: verdict.reason, ...(verdict.prohibited ? { prohibited: verdict.prohibited } : {}) };
     }
+
+    // The read was conformant under whatever skill was already active — now it can take
+    // effect as a selection (subject to precedence + planner admission in noteSkillSelected).
+    if (skillLoad) this.noteSkillSelected(skillLoad);
 
     // Conformant buy → authorize with the wallet and settle via the executor, then emit the
     // signed receipt + `onSettled`. Non-purchase actions just pass.

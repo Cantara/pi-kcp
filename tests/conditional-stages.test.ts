@@ -37,7 +37,7 @@ class FakePi {
     return { stdout: "", stderr: "not found", code: 1, killed: false };
   }
   async fire(event: string, payload: any, cwd: string): Promise<void> {
-    for (const handler of this.handlers.get(event) ?? []) await handler(payload, { cwd, hasUI: false });
+    for (const handler of this.handlers.get(event) ?? []) await handler(payload, { cwd, hasUI: false, isIdle: () => true });
   }
   asApi(): ExtensionAPI {
     return this as unknown as ExtensionAPI;
