@@ -9,7 +9,7 @@ authority_level_scale:
   - prepare
   - commit
 project: pi-kcp
-version: 0.12.2
+version: 0.12.3
 updated: "2026-07-31"
 language: en
 

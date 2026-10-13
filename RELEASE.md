@@ -1,5 +1,22 @@
 # Release notes
 
+## 0.12.3 — a follow-up round is no longer "ungoverned" for stages it never owed — 2026-10-13
+
+A prompt that takes two rounds (the model calls a tool, the call is blocked or runs, the model answers) was reported `ungoverned (stage never reached the ledger: plan,
+synthesize, ground)`, even when every decision was recorded and the blocked call was exactly the governance working. Found on a real box running a pi-kcp agent as a systemd
+service: a reviewer role may not read files; asked to read one, turn 0 recorded all seven stages with `approve` blocked, and the follow-up answer in turn 1 made the task
+read ungoverned. It repeated every time.
+
+`plan` (before_agent_start) and `synthesize`/`ground` (agent_end) happen once per PROMPT and are recorded on the prompt's first round (0.12.2 made that work). But every
+round was judged against all seven stages, so a continuation round could never be governed. A continuation round now owes the stages that belong to a round: `load`,
+`assess`, `approve`, `act`. The first round is unchanged and still owes everything; a continuation that never loaded its context is still reported, naming `load`.
+
+Fixed alongside: a continuation round left the round opener set for good (real Pi never fires `before_agent_start` for it), so the next PROMPT's `before_agent_start` reused
+that closed turn and lost its own `plan`. It now reuses a round `turn_start` opened only while that round is still open.
+
+7 new tests in `tests/continuation-round.test.ts` (blocked and allowed tool calls, a second prompt in the same session); each half of the fix is mutation-checked.
+Verdicts for multi-round prompts change from ungoverned to governed where the cycle did run: that is the point, but a consumer that treated "ungoverned" on a follow-up round as a signal will see it stop.
+
 ## 0.12.2 — the plan/synthesize/ground stages actually record now — 2026-09-28
 
 `/kcp evidence` on a from-scratch full-mode governed turn reported `UNGOVERNED: plan,
