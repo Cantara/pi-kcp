@@ -265,7 +265,7 @@ export class GovernedLoop {
    * prompt into a strict-mode refusal). It is re-selected after the reset instead — and
    * each turn's plan stage can still refuse or revoke it via {@link setTracedUnits}.
    */
-  beginTurn(turnIndex?: number, mode: GovernanceMode = "full"): TurnContext {
+  beginTurn(turnIndex?: number, mode: GovernanceMode = "full", continuation = false): TurnContext {
     this.turn = mintTraceparent(turnIndex);
     this.activeSkill = undefined;
     this.mode = mode;
@@ -273,7 +273,7 @@ export class GovernedLoop {
     this.ledger = new TurnLedger({
       turnIndex: turnIndex ?? 0,
       correlationId: this.turn.correlationId,
-      expectedStages: expectedStagesFor(mode),
+      expectedStages: expectedStagesFor(mode, continuation),
     });
     this.approvals.clear();
     this.prohibitedDigests.clear();
@@ -309,7 +309,10 @@ export class GovernedLoop {
       this.roundOpener = undefined;
       return this.turn;
     }
-    const ctx = this.beginTurn(turnIndex, mode);
+    // A CONTINUATION round: a later round of a prompt whose first round already closed (the model answering after a tool call, blocked or allowed). Real Pi fires no
+    // `before_agent_start` for it, so it owes only the per-round stages; the prompt's `plan`, `synthesize` and `ground` are judged on the first round.
+    const continuation = turnIndex > 0 && this.promptCorrelationId !== undefined && this.turnClosed;
+    const ctx = this.beginTurn(turnIndex, mode, continuation);
     this.roundOpener = "turn_start";
     return ctx;
   }
@@ -326,7 +329,10 @@ export class GovernedLoop {
    * place to mark "this round is where `agent_end`'s late synthesize/ground stages belong."
    */
   openRoundFromBeforeAgentStart(mode: GovernanceMode): TurnContext {
-    if (this.roundOpener === "turn_start") {
+    // Reuse the round `turn_start` opened ONLY while it is still open. A continuation round leaves `roundOpener` at "turn_start" for good (real Pi never fires
+    // `before_agent_start` for it), so the NEXT prompt's `before_agent_start` arrives with that flag stale and the previous round closed: reusing it there put the new
+    // prompt's `plan` into the old prompt's closed turn and pointed `promptCorrelationId` at it. A closed round means a new prompt: open a new one.
+    if (this.roundOpener === "turn_start" && !this.turnClosed) {
       this.roundOpener = undefined;
       this.promptCorrelationId = this.turn.correlationId;
       return this.turn;
