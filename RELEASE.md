@@ -7,6 +7,8 @@ governance off (`{"enabled": false}`), repoint `memoryUrl` or stop recall mid-se
 directory, and every later read in that session returns the same configuration (mode, `memoryUrl`, `autoRecall`, `status`). A rewrite, a deletion, invalid JSON, or a file
 created after the session started is ignored until the next session; a file that was absent at session start keeps the defaults it pinned.
 
+The pin holds within one extension runtime. Pi's `/reload` rebuilds the runtime (`register()` runs again with a fresh map), so a `/reload` re-reads the file even with the same session id; that is user-triggered and an agent cannot trigger it, so it starts a new pin by design.
+
 A new session is recognised by its Pi session id: `session_start` with a different id (new, resume, fork) reads the file again, while a `session_start` with the same id, also
 one that arrives after the first `turn_start`, keeps the pin. If `session_start` never fires, the first read per working directory pins lazily. Two working directories in one
 process pin independently.

@@ -723,6 +723,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     }
     return entry;
   };
+  // mutate: config-pin (session reset)
   pi.on("session_start", async (_event, ctx) => {
     // A new session id resets the pin and reads the file again; the same id keeps it.
     await pinnedConfig(ctx);
