@@ -75,6 +75,7 @@ describe("register() event wiring", () => {
       "before_agent_start",
       "context",
       "input",
+      "session_start",
       "tool_call",
       "tool_result",
       "turn_end",

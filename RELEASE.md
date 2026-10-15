@@ -1,5 +1,23 @@
 # Release notes
 
+## 0.13.0 — `.pi/kcp.json` is pinned at session start — 2026-10-15
+
+pi-kcp used to re-read `.pi/kcp.json` on every turn boundary, every input and every `/kcp` command. An agent that can write that file in its working directory could switch
+governance off (`{"enabled": false}`), repoint `memoryUrl` or stop recall mid-session, and the very next turn obeyed it. The file is now read once per session and working
+directory, and every later read in that session returns the same configuration (mode, `memoryUrl`, `autoRecall`, `status`). A rewrite, a deletion, invalid JSON, or a file
+created after the session started is ignored until the next session; a file that was absent at session start keeps the defaults it pinned.
+
+The pin holds within one extension runtime. Pi's `/reload` rebuilds the runtime (`register()` runs again with a fresh map), so a `/reload` re-reads the file even with the same session id; that is user-triggered and an agent cannot trigger it, so it starts a new pin by design.
+
+A new session is recognised by its Pi session id: `session_start` with a different id (new, resume, fork) reads the file again, while a `session_start` with the same id, also
+one that arrives after the first `turn_start`, keeps the pin. If `session_start` never fires, the first read per working directory pins lazily. Two working directories in one
+process pin independently.
+
+Behaviour change to expect: a developer who toggles governance by editing `.pi/kcp.json` must now start a new session for it to take effect (`/kcp govern <mode>` still
+changes the mode inside a session). Nothing else about what the configuration means has changed. `resolveTurnMode` takes an optional loader parameter (default unchanged).
+
+12 new tests in `tests/config-pin.test.ts`; mutation-checked (read the file directly at each read site, clear the pin on `turn_start` or on every `session_start`).
+
 ## 0.12.3 — a follow-up round is no longer "ungoverned" for stages it never owed — 2026-10-13
 
 A prompt that takes two rounds (the model calls a tool, the call is blocked or runs, the model answers) was reported `ungoverned (stage never reached the ledger: plan,
