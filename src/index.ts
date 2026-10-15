@@ -393,8 +393,9 @@ async function loadConfig(cwd: string): Promise<LoadedConfig> {
 async function resolveTurnMode(
   cwd: string,
   governOverride: GovernanceMode | undefined,
+  load: (cwd: string) => Promise<LoadedConfig> = loadConfig,
 ): Promise<{ mode: GovernanceMode; config: KcpConfig }> {
-  const { config } = await loadConfig(cwd);
+  const { config } = await load(cwd);
   return { mode: governOverride ?? (config.enabled ? config.governance : "off"), config };
 }
 
@@ -702,6 +703,31 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   //
   // requireActiveSkill precedence: an explicit RegisterOptions value pins strict mode; when
   // omitted, the built-in checker reads it from `.pi/kcp.json` at each turn boundary.
+  // Config pin (AL-0b-21): `.pi/kcp.json` is read once per (session, cwd) and every later read in
+  // that session returns the same object, so an agent that can write the file cannot switch
+  // governance off or repoint `memoryUrl` mid-session. A new session id re-reads.
+  // mutate: config-pin
+  let pinnedSessionId: string | undefined;
+  const pinned = new Map<string, Promise<LoadedConfig>>();
+  const pinnedConfig = (ctx: { cwd: string; sessionManager?: { getSessionId?: () => string } }): Promise<LoadedConfig> => {
+    const sessionId = ctx.sessionManager?.getSessionId?.() ?? "";
+    if (sessionId !== pinnedSessionId) {
+      pinned.clear();
+      pinnedSessionId = sessionId;
+    }
+    const key = `${sessionId}\u0000${resolve(ctx.cwd)}`;
+    let entry = pinned.get(key);
+    if (!entry) {
+      entry = loadConfig(ctx.cwd);
+      pinned.set(key, entry);
+    }
+    return entry;
+  };
+  pi.on("session_start", async (_event, ctx) => {
+    // A new session id resets the pin and reads the file again; the same id keeps it.
+    await pinnedConfig(ctx);
+  });
+
   const builtInChecker = options.conformanceChecker
     ? undefined
     : new HarnessConformanceChecker({ requireActiveSkill: options.requireActiveSkill ?? false });
@@ -739,7 +765,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     description: "Use KCP memory and deterministic knowledge plans",
     handler: async (args, ctx) => {
       const [subcommand, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-      const loaded = await loadConfig(ctx.cwd);
+      const loaded = await pinnedConfig(ctx);
       const config = loaded.config;
       if (subcommand === "help" || !subcommand) {
         publish(pi, "KCP help", KCP_HELP);
@@ -906,7 +932,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // which races ahead of this on Pi 0.80.6 and may already have opened the turn this
   // handler would otherwise open again, discarding `plan`'s just-recorded decision.
   pi.on("turn_start", async (event, ctx) => {
-    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
+    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride, () => pinnedConfig(ctx));
     mode = resolvedMode;
     loop.openRoundFromTurnStart(event.turnIndex, mode);
     posture = config.gateFailurePosture;
@@ -930,7 +956,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // `turn_start` hasn't already (see {@link GovernedLoop.openRoundFromTurnStart}'s doc for the
   // full, order-agnostic mechanism this and `turn_start` share).
   pi.on("before_agent_start", async (event, ctx) => {
-    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
+    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride, () => pinnedConfig(ctx));
     if (resolvedMode !== "full") return undefined;
     // Keep the shared turn state current for anything that fires in the (short) window
     // before `turn_start` itself runs and overwrites these with the same values.
@@ -973,7 +999,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     if (event.source === "extension") return { action: "continue" as const };
     // Detect user-forced skills (#28): `/skill:<name>` selects a skill for the turn.
     loop.observeInput(event.text, getCommands());
-    const config = (await loadConfig(ctx.cwd)).config;
+    const config = (await pinnedConfig(ctx)).config;
     const transformed = await augmentPrompt(event.text, config);
     return transformed === event.text
       ? { action: "continue" as const }
