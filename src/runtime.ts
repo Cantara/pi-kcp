@@ -48,9 +48,16 @@ export const TOOL_STAGES = ["approve", "act"] as const satisfies readonly Stage[
  */
 export type GovernanceMode = "full" | "tool" | "off";
 
-/** The stages a given mode is accountable for. */
-export function expectedStagesFor(mode: GovernanceMode): readonly Stage[] {
-  if (mode === "full") return ALL_STAGES;
+/** Stages that happen once per PROMPT, not once per round: `plan` at before_agent_start, `synthesize`/`ground` at agent_end. They are recorded on the prompt's first round. */
+export const PROMPT_STAGES: readonly Stage[] = ["plan", "synthesize", "ground"];
+
+/**
+ * The stages a given mode is accountable for. A `continuation` round (a later round of a prompt whose first round already closed: the model's follow-up after a tool
+ * call, blocked or allowed) owes only the stages that belong to a round; the per-prompt stages are judged on the first round, where they are recorded. Without this a
+ * prompt with two rounds could never read governed: its second round was always "missing plan, synthesize, ground".
+ */
+export function expectedStagesFor(mode: GovernanceMode, continuation = false): readonly Stage[] {
+  if (mode === "full") return continuation ? ALL_STAGES.filter((s) => !PROMPT_STAGES.includes(s)) : ALL_STAGES;
   if (mode === "tool") return TOOL_STAGES;
   return [];
 }

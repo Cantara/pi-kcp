@@ -1,5 +1,40 @@
 # Release notes
 
+## 0.13.0 — `.pi/kcp.json` is pinned at session start — 2026-10-15
+
+pi-kcp used to re-read `.pi/kcp.json` on every turn boundary, every input and every `/kcp` command. An agent that can write that file in its working directory could switch
+governance off (`{"enabled": false}`), repoint `memoryUrl` or stop recall mid-session, and the very next turn obeyed it. The file is now read once per session and working
+directory, and every later read in that session returns the same configuration (mode, `memoryUrl`, `autoRecall`, `status`). A rewrite, a deletion, invalid JSON, or a file
+created after the session started is ignored until the next session; a file that was absent at session start keeps the defaults it pinned.
+
+The pin holds within one extension runtime. Pi's `/reload` rebuilds the runtime (`register()` runs again with a fresh map), so a `/reload` re-reads the file even with the same session id; that is user-triggered and an agent cannot trigger it, so it starts a new pin by design.
+
+A new session is recognised by its Pi session id: `session_start` with a different id (new, resume, fork) reads the file again, while a `session_start` with the same id, also
+one that arrives after the first `turn_start`, keeps the pin. If `session_start` never fires, the first read per working directory pins lazily. Two working directories in one
+process pin independently.
+
+Behaviour change to expect: a developer who toggles governance by editing `.pi/kcp.json` must now start a new session for it to take effect (`/kcp govern <mode>` still
+changes the mode inside a session). Nothing else about what the configuration means has changed. `resolveTurnMode` takes an optional loader parameter (default unchanged).
+
+12 new tests in `tests/config-pin.test.ts`; mutation-checked (read the file directly at each read site, clear the pin on `turn_start` or on every `session_start`).
+
+## 0.12.3 — a follow-up round is no longer "ungoverned" for stages it never owed — 2026-10-13
+
+A prompt that takes two rounds (the model calls a tool, the call is blocked or runs, the model answers) was reported `ungoverned (stage never reached the ledger: plan,
+synthesize, ground)`, even when every decision was recorded and the blocked call was exactly the governance working. Found on a real box running a pi-kcp agent as a systemd
+service: a reviewer role may not read files; asked to read one, turn 0 recorded all seven stages with `approve` blocked, and the follow-up answer in turn 1 made the task
+read ungoverned. It repeated every time.
+
+`plan` (before_agent_start) and `synthesize`/`ground` (agent_end) happen once per PROMPT and are recorded on the prompt's first round (0.12.2 made that work). But every
+round was judged against all seven stages, so a continuation round could never be governed. A continuation round now owes the stages that belong to a round: `load`,
+`assess`, `approve`, `act`. The first round is unchanged and still owes everything; a continuation that never loaded its context is still reported, naming `load`.
+
+Fixed alongside: a continuation round left the round opener set for good (real Pi never fires `before_agent_start` for it), so the next PROMPT's `before_agent_start` reused
+that closed turn and lost its own `plan`. It now reuses a round `turn_start` opened only while that round is still open.
+
+7 new tests in `tests/continuation-round.test.ts` (blocked and allowed tool calls, a second prompt in the same session); each half of the fix is mutation-checked.
+Verdicts for multi-round prompts change from ungoverned to governed where the cycle did run: that is the point, but a consumer that treated "ungoverned" on a follow-up round as a signal will see it stop.
+
 ## 0.12.2 — the plan/synthesize/ground stages actually record now — 2026-09-28
 
 `/kcp evidence` on a from-scratch full-mode governed turn reported `UNGOVERNED: plan,

@@ -61,7 +61,7 @@ class FakePi {
   }
   async fire(event: string, payload: any, cwd: string): Promise<any> {
     let result: any;
-    for (const handler of this.handlers.get(event) ?? []) result = await handler(payload, { cwd, hasUI: false });
+    for (const handler of this.handlers.get(event) ?? []) result = await handler(payload, { cwd, hasUI: false, isIdle: () => true });
     return result;
   }
   asApi(): ExtensionAPI {

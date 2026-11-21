@@ -394,8 +394,9 @@ async function loadConfig(cwd: string): Promise<LoadedConfig> {
 async function resolveTurnMode(
   cwd: string,
   governOverride: GovernanceMode | undefined,
+  load: (cwd: string) => Promise<LoadedConfig> = loadConfig,
 ): Promise<{ mode: GovernanceMode; config: KcpConfig }> {
-  const { config } = await loadConfig(cwd);
+  const { config } = await load(cwd);
   return { mode: governOverride ?? (config.enabled ? config.governance : "off"), config };
 }
 
@@ -835,6 +836,32 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   //
   // requireActiveSkill precedence: an explicit RegisterOptions value pins strict mode; when
   // omitted, the built-in checker reads it from `.pi/kcp.json` at each turn boundary.
+  // Config pin (AL-0b-21): `.pi/kcp.json` is read once per (session, cwd) and every later read in
+  // that session returns the same object, so an agent that can write the file cannot switch
+  // governance off or repoint `memoryUrl` mid-session. A new session id re-reads.
+  // mutate: config-pin
+  let pinnedSessionId: string | undefined;
+  const pinned = new Map<string, Promise<LoadedConfig>>();
+  const pinnedConfig = (ctx: { cwd: string; sessionManager?: { getSessionId?: () => string } }): Promise<LoadedConfig> => {
+    const sessionId = ctx.sessionManager?.getSessionId?.() ?? "";
+    if (sessionId !== pinnedSessionId) {
+      pinned.clear();
+      pinnedSessionId = sessionId;
+    }
+    const key = `${sessionId}\u0000${resolve(ctx.cwd)}`;
+    let entry = pinned.get(key);
+    if (!entry) {
+      entry = loadConfig(ctx.cwd);
+      pinned.set(key, entry);
+    }
+    return entry;
+  };
+  // mutate: config-pin (session reset)
+  pi.on("session_start", async (_event, ctx) => {
+    // A new session id resets the pin and reads the file again; the same id keeps it.
+    await pinnedConfig(ctx);
+  });
+
   const builtInChecker = options.conformanceChecker
     ? undefined
     : new HarnessConformanceChecker({ requireActiveSkill: options.requireActiveSkill ?? false });
@@ -873,7 +900,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     handler: async (args, ctx) => {
       routeTrustNotices(ctx);
       const [subcommand, ...rest] = args.trim().split(/\s+/).filter(Boolean);
-      const loaded = await loadConfig(ctx.cwd);
+      const loaded = await pinnedConfig(ctx);
       const config = loaded.config;
       if (subcommand === "help" || !subcommand) {
         publish(pi, "KCP help", KCP_HELP);
@@ -1034,16 +1061,12 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // The turn's configuration, captured with it, so the plan stage need not re-read disk.
   let turnConfig: KcpConfig = defaultConfig;
 
-  // Mint a fresh per-turn correlation id (#29) at the turn boundary.
-  //
-  // NOT reliably the first event of a turn — see `before_agent_start` immediately below,
-  // which races ahead of this on Pi 0.80.6 and may already have opened the turn this
-  // handler would otherwise open again, discarding `plan`'s just-recorded decision.
-  pi.on("turn_start", async (event, ctx) => {
-    routeTrustNotices(ctx);
-    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
+  // Apply a resolved turn configuration to the shared turn state. Both `turn_start` and
+  // `before_agent_start` call this: Pi's real order is `input` -> `before_agent_start` ->
+  // `turn_start(0)` (ref #69/#71), so on a session's first prompt whichever fires first must
+  // seed `mode`/`posture`/`turnConfig` and the built-in checker's strict flag.
+  const applyTurnConfig = (resolvedMode: GovernanceMode, config: KcpConfig): void => {
     mode = resolvedMode;
-    loop.openRoundFromTurnStart(event.turnIndex, mode);
     posture = config.gateFailurePosture;
     turnConfig = config;
     // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
@@ -1051,6 +1074,29 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     if (builtInChecker && options.requireActiveSkill === undefined) {
       builtInChecker.requireActiveSkill = config.requireActiveSkill;
     }
+  };
+
+  // The outermost start of a Pi run (#71 follow-up leak). Pi re-emits `agent_start` for
+  // every in-prompt retry/`continue()` too — `GovernedLoop.onAgentStart()` itself ignores
+  // every call after the first for a run in flight, so this is safe to wire unconditionally.
+  // Closes: a prompt that fails before ever starting a run (model/auth validation, a
+  // failed `before_agent_start`) never reaches `agent_settled` either, so a later run
+  // with no `input` of its own (e.g. `sendCustomMessage({ triggerTurn: true })`) would
+  // otherwise inherit whatever `input` last set.
+  pi.on("agent_start", async () => {
+    loop.onAgentStart();
+  });
+
+  // Mint a fresh per-turn correlation id (#29) at the turn boundary.
+  //
+  // NOT reliably the first event of a turn — see `before_agent_start` immediately below,
+  // which races ahead of this on Pi 0.80.6 and may already have opened the turn this
+  // handler would otherwise open again, discarding `plan`'s just-recorded decision.
+  pi.on("turn_start", async (event, ctx) => {
+    routeTrustNotices(ctx);
+    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride, () => pinnedConfig(ctx));
+    applyTurnConfig(resolvedMode, config);
+    loop.openRoundFromTurnStart(event.turnIndex, mode);
   });
 
   // plan — the prompt is known and Pi has already assembled what it loaded, so the stage can
@@ -1066,13 +1112,16 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // full, order-agnostic mechanism this and `turn_start` share).
   pi.on("before_agent_start", async (event, ctx) => {
     routeTrustNotices(ctx);
-    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
+    // Unconditional, like `agent_start`/`agent_settled` (#71 early-failure leak): marks the
+    // latest observed input as one Pi has actually committed to running, regardless of
+    // governance mode. First, so a later throw (e.g. from the config read) cannot skip it.
+    loop.onBeforeAgentStart();
+    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride, () => pinnedConfig(ctx));
+    // Seed the shared turn state even when the plan stage will not run: this fires BEFORE
+    // the first `turn_start` of a session (ref #69), so `mode`/`posture`/the built-in
+    // checker's strict flag would otherwise still be their declaration defaults.
+    applyTurnConfig(resolvedMode, config);
     if (resolvedMode !== "full") return undefined;
-    // Keep the shared turn state current for anything that fires in the (short) window
-    // before `turn_start` itself runs and overwrites these with the same values.
-    mode = resolvedMode;
-    turnConfig = config;
-    posture = config.gateFailurePosture;
     loop.openRoundFromBeforeAgentStart(resolvedMode);
 
     await loop.stage("plan", async () => {
@@ -1106,10 +1155,25 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   });
 
   pi.on("input", async (event, ctx) => {
+    // A genuine new prompt boundary, not a mid-run steer/follow-up/poisoned re-entry.
+    // `event.streamingBehavior` is NOT a reliable discriminator: Pi's `prompt()` passes
+    // `this.isStreaming ? options?.streamingBehavior : undefined` into `emitInput`
+    // (agent-session.js:~795) — a `prompt()` call made mid-run WITHOUT `streamingBehavior`
+    // (which Pi then rejects at :812-814, AFTER `input` has already fired) looks identical
+    // to a genuine idle prompt: `streamingBehavior` is `undefined` either way. `ctx.isIdle()`
+    // is Pi's own live run-state flag (`!session.isStreaming`), read at the moment this
+    // handler runs, so it is accurate for both cases this guards against: a mid-run call
+    // with no `streamingBehavior` (not idle — don't touch the in-force skill) and the
+    // settle race (Pi clears `_isAgentRunActive` before emitting `agent_settled`, so a new
+    // prompt started synchronously from an earlier `agent_settled` handler IS idle here,
+    // same as any other genuine new prompt). Detect user-forced skills (#28) and reset the
+    // prompt-scoped skill slot only when idle — regardless of source, so an
+    // extension-driven prompt (Pi's `sendUserMessage`) is covered too.
+    if (ctx.isIdle()) {
+      loop.observeInput(event.text, getCommands());
+    }
     if (event.source === "extension") return { action: "continue" as const };
-    // Detect user-forced skills (#28): `/skill:<name>` selects a skill for the turn.
-    loop.observeInput(event.text, getCommands());
-    const config = (await loadConfig(ctx.cwd)).config;
+    const config = (await pinnedConfig(ctx)).config;
     const transformed = await augmentPrompt(event.text, config);
     return transformed === event.text
       ? { action: "continue" as const }
@@ -1201,6 +1265,10 @@ function registerGovernedCycle(
   // closed the turn these stages describe and pushed it to history. `mode()`/`full()` are
   // safe to trust here unlike in `before_agent_start`: `agent_end` firing after `turn_end`
   // means `turn_start` has definitely already run by now.
+  //
+  // NOT the prompt boundary (ref #71, #68): Pi may retry, compact, or run a queued
+  // continuation after `agent_end` with no new `input` in between — the prompt-scoped skill
+  // slot must survive that, so nothing is cleared here.
   pi.on("agent_end", async (event) => {
     if (!full()) return undefined;
     await loop.recordLateStage("synthesize", async () => ({
@@ -1209,6 +1277,23 @@ function registerGovernedCycle(
     await loop.recordLateStage("ground", async () => ({
       detail: { messages: event.messages.length },
     }));
+    return undefined;
+  });
+
+  // The true prompt boundary: fired once the run has fully settled — no automatic retry,
+  // compaction, or queued continuation will run (docs/extensions.md). Unconditional, not
+  // gated by `full()`: the prompt-scoped skill slot must not leak into the next prompt
+  // regardless of governance mode.
+  //
+  // Overlap guard (#71 follow-up): `!ctx.isIdle()` means a NEWER run has already set
+  // Pi's flag (an earlier extension's `agent_settled` handler started it before this
+  // older run's own settle reached us) — this event belongs to a run that is no longer
+  // current, and calling `endPrompt` now would race the newer run's own state. Leave it
+  // untouched; `GovernedLoop.onAgentStart`'s overlap claim and that run's own eventual
+  // `agent_settled` (idle once it fires) resolve it correctly either order.
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!ctx.isIdle()) return undefined;
+    loop.endPrompt();
     return undefined;
   });
 

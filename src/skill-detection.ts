@@ -30,9 +30,15 @@ export interface SkillSelected {
 const SKILL_FILE = "SKILL.md";
 const FORCED_SKILL_PREFIX = "/skill:";
 
-/** True when a `read` tool call path points at a skill definition file. */
+/**
+ * True when a `read` tool call path points at a skill definition file: the final path
+ * segment must BE `SKILL.md`. A bare suffix match is not enough — `/etc/shadow-SKILL.md`
+ * or `MYSKILL.md` end in `SKILL.md` too, and this predicate also gates the strict-mode
+ * bootstrap admission (`requireActiveSkill`), where a false positive is an unscoped read.
+ */
 export function isSkillReadPath(path: string): boolean {
-  return path.endsWith(SKILL_FILE);
+  const segments = path.replace(/\\/g, "/").split("/");
+  return segments[segments.length - 1] === SKILL_FILE;
 }
 
 /** Derive a skill name from a `.../<skill-name>/SKILL.md` path (the containing directory). */
