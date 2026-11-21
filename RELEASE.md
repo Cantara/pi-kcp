@@ -1,5 +1,55 @@
 # Release notes
 
+## 0.14.0 — a skill holds for the whole prompt, and a repository can no longer choose the governance agent — 2026-11-21
+
+Three changes land together; two of them change behaviour you may rely on. Upgrade notes are at the end.
+
+**A selected skill now governs the whole prompt (#67, #69, #70, #71; fix in #68).**
+`beginTurn()` cleared the active skill on every `turn_start`, and Pi fires `turn_start` on every tool round, so a
+skill the agent selected by reading its `SKILL.md` only constrained the round it was read in. Found live: a skill
+declaring `action_scope: {tools: [read, bash]}` was read in one round and the file was written in the next. Both
+user-forced (`/skill:<name>`) and agent-driven selections now live for the prompt:
+
+- The prompt ends at Pi's `agent_settled`, not `agent_end`. Pi may retry, compact or continue after `agent_end` with no
+  new `input`, and the selection survives all of that. A mid-run steer or follow-up does not end it.
+- A user-forced skill takes precedence. An agent `SKILL.md` read fills the slot only when no user force is in effect,
+  and the read is checked against the skill already in force before any swap, so a blocked read never takes effect. A
+  refused swap is reported rather than silent.
+- The planner trace is scoped to the prompt too. It was wiped before the first `turn_start`, so planner admission in
+  `full` mode never gated any round of a real prompt.
+
+**The local `kcp-agent` lookup is bounded to the project root (#83).** 0.12.1 walked up to the filesystem root, so a
+`node_modules/.bin/kcp-agent` planted in a parent directory above a cloned repo was a candidate. The walk now stops at
+the project root (the nearest ancestor with `.git`, or `cwd` when there is none), and each candidate's real path must
+stay inside the project root's real path, so a symlink pointing out of the repo is rejected.
+
+**A repo-local `kcp-agent` needs explicit trust (#84).** `kcp-agent` makes the governance decisions, so a repository must
+not be able to choose it. A binary at `node_modules/.bin/kcp-agent` inside the project, and an `agentCli` set in the
+repo's own `.pi/kcp.json`, are now used only when you trust them from a source the repository cannot write:
+`KCP_TRUST_LOCAL_AGENT=1`, or `~/.pi/kcp.json` with `"trustLocalAgent": true` or the project's real path in
+`"trustedProjects"`. A `trustLocalAgent` key in the repo's own `.pi/kcp.json` is ignored. `KCP_AGENT_CLI` and a
+user-level `agentCli` need no trust. An untrusted candidate is skipped with one notice per session, naming the path and
+how to trust it, and the "kcp-agent CLI was not found" error carries the same hint. 8 new tests in
+`tests/agent-trust.test.ts`.
+
+**Behaviour changes to expect**
+
+- A skill with no `action_scope` used to be ungoverned after the round that selected it. Once selected it now blocks
+  every later call in the prompt, because no scope means nothing is in scope.
+- Under `requireActiveSkill`, a `SKILL.md` read with no skill in force is the one action admitted to start a skill.
+  Anything else with no skill in force is held, as before.
+- Anyone relying on a repo-local `kcp-agent` must trust it as above. That includes this repo's own `kcp-harness`
+  devDependency and anything that resolves `kcp-agent` from a project's `node_modules`. A repo-config `agentCli` has to
+  move to `KCP_AGENT_CLI` or `~/.pi/kcp.json`, or be trusted.
+
+**Not covered**
+
+- A `triggerTurn` run started inside `agent_settled` inherits the previous prompt's skill for its whole run. Tracked in
+  #80; it needs a run id from Pi.
+- The `which kcp-agent` / `PATH` fallback is still trusted. A `./node_modules/.bin` on `PATH` (npm and `bunx` scripts
+  prepend one) would still win. The fix is small and reuses the same trust predicate, but it is not in this release.
+- No integrity check (hash or signature) of a trusted binary.
+
 ## 0.13.0 — `.pi/kcp.json` is pinned at session start — 2026-10-15
 
 pi-kcp used to re-read `.pi/kcp.json` on every turn boundary, every input and every `/kcp` command. An agent that can write that file in its working directory could switch
