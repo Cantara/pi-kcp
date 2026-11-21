@@ -48,7 +48,7 @@ class FakePi {
     return { stdout: '{"schemaVersion":1,"kind":"plan","task":"ship"}', stderr: "", code: 0, killed: false };
   }
 
-  async fire(event: string, payload: any, ctx: any = { cwd: "/repo", hasUI: false }): Promise<any> {
+  async fire(event: string, payload: any, ctx: any = { cwd: "/repo", hasUI: false, isIdle: () => true }): Promise<any> {
     const list = this.handlers.get(event) ?? [];
     let result: any;
     for (const handler of list) result = await handler(payload, ctx);
@@ -66,12 +66,17 @@ describe("register() event wiring", () => {
   it("registers the runtime-depth event subscriptions", () => {
     const pi = new FakePi();
     register(pi.asApi());
-    // The governed cycle spans eight of Pi's lifecycle events (#27), up from three.
+    // The governed cycle spans eight of Pi's lifecycle events (#27), up from three, plus
+    // `agent_settled` (#71) — the true prompt boundary, distinct from `agent_end`, that
+    // clears the prompt-scoped skill slot — and `agent_start` (#71 follow-up), which
+    // closes the leak where a prompt fails before ever starting a run.
     // `before_provider_request` is deliberately absent: its payload and result are both
     // `unknown`, so it carries no contract to govern against.
     // See docs/decisions/0003-governed-runtime.md.
     expect([...pi.handlers.keys()].sort()).toEqual([
       "agent_end",
+      "agent_settled",
+      "agent_start",
       "before_agent_start",
       "context",
       "input",
@@ -148,7 +153,7 @@ describe("register() event wiring", () => {
     const result = await pi.fire(
       "input",
       { type: "input", text: "/skill:deploy go", source: "interactive" },
-      { cwd: "/repo" },
+      { cwd: "/repo", isIdle: () => true },
     );
     expect(result).toEqual({ action: "continue" });
   });
