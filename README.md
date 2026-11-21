@@ -88,7 +88,9 @@ The extension works with conservative defaults. A project may add `.pi/kcp.json`
 }
 ```
 
-All fields are optional. Configuration values are validated; invalid configuration disables automatic behavior and is reported by `/kcp health`. `agentCli` may point to either the JavaScript CLI module or an executable command. Discovery checks the configured path, `KCP_AGENT_CLI`, the documented Homebrew/npm locations, and finally `kcp-agent` on `PATH`.
+All fields are optional. Configuration values are validated; invalid configuration disables automatic behavior and is reported by `/kcp health`. `agentCli` may point to either the JavaScript CLI module or an executable command. Discovery order: `KCP_AGENT_CLI`, then `agentCli` in the user-level `~/.pi/kcp.json`, then (only if trusted, see below) the repo's `agentCli` and `node_modules/.bin/kcp-agent` inside the project root, then the documented Homebrew/npm locations, and finally `kcp-agent` on `PATH`.
+
+**Trusting a repo-local kcp-agent.** kcp-agent makes the governance decisions, so a repository must not be able to choose it. A repo-local binary or a repo `.pi/kcp.json` `agentCli` is used only if you trust it from a source the repo cannot write: `KCP_TRUST_LOCAL_AGENT=1`, or `~/.pi/kcp.json` with `"trustLocalAgent": true` or `"trustedProjects": ["/real/path/to/project"]`. A `trustLocalAgent` key in the repo's own `.pi/kcp.json` is ignored. When an untrusted repo-local agent is skipped, pi-kcp says so once per session.
 
 ## Diagnostics
 

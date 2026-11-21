@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -144,6 +144,18 @@ describe("findAgentInvocation — local node_modules/.bin resolution", () => {
   } as unknown as ExtensionAPI;
 
   const baseConfig = parseConfig({}).config;
+
+  // Repo-local resolution now requires explicit user trust (see agent-trust.test.ts); these
+  // tests are about the resolution itself, so they opt in the way a user would.
+  let savedTrust: string | undefined;
+  beforeEach(() => {
+    savedTrust = process.env.KCP_TRUST_LOCAL_AGENT;
+    process.env.KCP_TRUST_LOCAL_AGENT = "1";
+  });
+  afterEach(() => {
+    if (savedTrust === undefined) delete process.env.KCP_TRUST_LOCAL_AGENT;
+    else process.env.KCP_TRUST_LOCAL_AGENT = savedTrust;
+  });
 
   function makeProjectWithLocalAgent(): { root: string; cleanup: () => void } {
     const root = mkdtempSync(join(tmpdir(), "pi-kcp-agent-path-test-"));
@@ -327,6 +339,8 @@ describe("local kcp-agent lookup is bounded to the project root", () => {
   it("configured agentCli and KCP_AGENT_CLI keep priority over a local binary", async () => {
     const { base, cleanup } = sandbox();
     const saved = process.env.KCP_AGENT_CLI;
+    const savedTrust = process.env.KCP_TRUST_LOCAL_AGENT;
+    process.env.KCP_TRUST_LOCAL_AGENT = "1"; // repo-config agentCli only counts when trusted
     try {
       const repo = join(base, "repo");
       mkdirSync(join(repo, ".git"), { recursive: true });
@@ -342,6 +356,8 @@ describe("local kcp-agent lookup is bounded to the project root", () => {
     } finally {
       if (saved === undefined) delete process.env.KCP_AGENT_CLI;
       else process.env.KCP_AGENT_CLI = saved;
+      if (savedTrust === undefined) delete process.env.KCP_TRUST_LOCAL_AGENT;
+      else process.env.KCP_TRUST_LOCAL_AGENT = savedTrust;
       cleanup();
     }
   });
