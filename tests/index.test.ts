@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -7,6 +7,8 @@ import {
   agentInvocationForPath,
   extractRecallQuery,
   findAgentInvocation,
+  findProjectRoot,
+  localNodeModulesBinPaths,
   KCP_HELP,
   formatRecallBlock,
   normalizePlanJson,
@@ -170,6 +172,7 @@ describe("findAgentInvocation — local node_modules/.bin resolution", () => {
   it("finds it from a nested working directory, walking up to the project root (monorepo case)", async () => {
     const { root, cleanup } = makeProjectWithLocalAgent();
     try {
+      mkdirSync(join(root, ".git")); // project root marker: the walk stops here
       const nested = join(root, "packages", "some-package", "src");
       mkdirSync(nested, { recursive: true });
       const invocation = await findAgentInvocation(explodingPi, nested, baseConfig);
@@ -201,6 +204,145 @@ describe("findAgentInvocation — local node_modules/.bin resolution", () => {
       expect(invocation).toBeUndefined();
     } finally {
       rmSync(emptyDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("local kcp-agent lookup is bounded to the project root", () => {
+  const noWhichPi = {
+    exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+  } as unknown as ExtensionAPI;
+  const baseConfig = parseConfig({}).config;
+
+  function plantAgent(dir: string): string {
+    const bin = join(dir, "node_modules", ".bin");
+    mkdirSync(bin, { recursive: true });
+    const file = join(bin, "kcp-agent");
+    // Planted binary: never executed by these tests, only its path is inspected.
+    writeFileSync(file, "#!/bin/sh\necho allow\n", { mode: 0o755 });
+    return file;
+  }
+
+  function sandbox(): { base: string; cleanup: () => void } {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "pi-kcp-bound-test-")));
+    return { base, cleanup: () => rmSync(base, { recursive: true, force: true }) };
+  }
+
+  it("findProjectRoot returns the nearest ancestor with .git (directory or file)", () => {
+    const { base, cleanup } = sandbox();
+    try {
+      mkdirSync(join(base, "repo", ".git"), { recursive: true });
+      mkdirSync(join(base, "repo", "a", "b"), { recursive: true });
+      expect(findProjectRoot(join(base, "repo", "a", "b"))).toBe(join(base, "repo"));
+      mkdirSync(join(base, "wt", "sub"), { recursive: true });
+      writeFileSync(join(base, "wt", ".git"), "gitdir: /elsewhere\n"); // worktree-style file
+      expect(findProjectRoot(join(base, "wt", "sub"))).toBe(join(base, "wt"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does NOT use a binary planted in a directory above the project root", async () => {
+    const { base, cleanup } = sandbox();
+    try {
+      const planted = plantAgent(base); // ancestor of the repo
+      const repo = join(base, "clones", "repo");
+      mkdirSync(join(repo, ".git"), { recursive: true });
+      plantAgent(join(base, "clones"));
+      expect(localNodeModulesBinPaths(repo, "kcp-agent")).not.toContain(planted);
+      expect(localNodeModulesBinPaths(repo, "kcp-agent")).toEqual([]);
+      const invocation = await findAgentInvocation(noWhichPi, repo, { ...baseConfig, agentCli: undefined });
+      expect(invocation?.command).not.toBe(planted);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("uses a binary inside the project root and in a nested workspace package", () => {
+    const { base, cleanup } = sandbox();
+    try {
+      const repo = join(base, "repo");
+      mkdirSync(join(repo, ".git"), { recursive: true });
+      const rootBin = plantAgent(repo);
+      const pkgDir = join(repo, "packages", "app");
+      mkdirSync(pkgDir, { recursive: true });
+      const pkgBin = plantAgent(pkgDir);
+      expect(localNodeModulesBinPaths(pkgDir, "kcp-agent")).toEqual([pkgBin, rootBin]);
+      expect(localNodeModulesBinPaths(repo, "kcp-agent")).toEqual([rootBin]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("without any .git only cwd is searched", () => {
+    const { base, cleanup } = sandbox();
+    try {
+      plantAgent(base);
+      const cwd = join(base, "plain", "dir");
+      mkdirSync(cwd, { recursive: true });
+      const own = plantAgent(cwd);
+      expect(findProjectRoot(cwd)).toBe(cwd);
+      expect(localNodeModulesBinPaths(cwd, "kcp-agent")).toEqual([own]);
+      const bare = join(base, "bare");
+      mkdirSync(bare);
+      expect(localNodeModulesBinPaths(bare, "kcp-agent")).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("rejects a symlink inside the project root whose real path leaves it", () => {
+    const { base, cleanup } = sandbox();
+    try {
+      const repo = join(base, "repo");
+      mkdirSync(join(repo, ".git"), { recursive: true });
+      const outside = join(base, "outside-agent.js");
+      writeFileSync(outside, "// planted\n", { mode: 0o755 });
+      const bin = join(repo, "node_modules", ".bin");
+      mkdirSync(bin, { recursive: true });
+      symlinkSync(outside, join(bin, "kcp-agent"));
+      expect(localNodeModulesBinPaths(repo, "kcp-agent")).toEqual([]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("accepts a symlink that stays inside the project root (normal .bin layout)", () => {
+    const { base, cleanup } = sandbox();
+    try {
+      const repo = join(base, "repo");
+      mkdirSync(join(repo, ".git"), { recursive: true });
+      const target = join(repo, "node_modules", "kcp-agent", "dist");
+      mkdirSync(target, { recursive: true });
+      writeFileSync(join(target, "cli.js"), "// stub\n");
+      const bin = join(repo, "node_modules", ".bin");
+      mkdirSync(bin, { recursive: true });
+      symlinkSync(join(target, "cli.js"), join(bin, "kcp-agent"));
+      expect(localNodeModulesBinPaths(repo, "kcp-agent")).toEqual([join(bin, "kcp-agent")]);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("configured agentCli and KCP_AGENT_CLI keep priority over a local binary", async () => {
+    const { base, cleanup } = sandbox();
+    const saved = process.env.KCP_AGENT_CLI;
+    try {
+      const repo = join(base, "repo");
+      mkdirSync(join(repo, ".git"), { recursive: true });
+      plantAgent(repo);
+      const cfgPath = join(base, "configured-cli.js");
+      const envPath = join(base, "env-cli.js");
+      writeFileSync(cfgPath, "// cfg\n");
+      writeFileSync(envPath, "// env\n");
+      delete process.env.KCP_AGENT_CLI;
+      expect((await findAgentInvocation(noWhichPi, repo, { ...baseConfig, agentCli: cfgPath }))?.args).toEqual([cfgPath]);
+      process.env.KCP_AGENT_CLI = envPath;
+      expect((await findAgentInvocation(noWhichPi, repo, { ...baseConfig, agentCli: undefined }))?.args).toEqual([envPath]);
+    } finally {
+      if (saved === undefined) delete process.env.KCP_AGENT_CLI;
+      else process.env.KCP_AGENT_CLI = saved;
+      cleanup();
     }
   });
 });

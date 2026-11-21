@@ -45,6 +45,7 @@ class FakePi {
     return {
       cwd,
       hasUI: true,
+      isIdle: () => true,
       ui: { notify: (m: string) => this.notes.push(m) },
       sessionManager: { getSessionId: () => id },
     };
