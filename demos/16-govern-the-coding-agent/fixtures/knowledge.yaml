@@ -1,0 +1,42 @@
+# Demo 16 fixture — the KCP manifest pi-kcp's own runtime governs the REAL Pi
+# session against (via the extension's built-in HarnessConformanceChecker, src/
+# harness-conformance.ts). Unlike every prior demo's scripted/simulated agent,
+# this manifest is read by pi-kcp's real ManifestScopeResolver, at the cwd it
+# actually runs in, while a real Pi coding-agent turn is executing.
+#
+# - ops-deploy : the ONE sanctioned skill the agent loads (a real `read` tool
+#   call on its SKILL.md, detected by src/skill-detection.ts). Its action_scope
+#   is the allowlist every later tool call in the turn is held to.
+#
+# `paths` MUST include the skill's own SKILL.md location ("skills/" below), not
+# just the domain it operates on ("ops/") — a real, live-discovered finding
+# (see DEMO.md's Note): governed-loop.ts's evaluateToolCall() activates the
+# skill and stamps `skillContext` on the SAME tool call that loaded it, so the
+# self-load read is itself checked against the scope it just declared. Leaving
+# the skill's own directory out of its own scope makes it unable to ever load.
+kcp_version: "0.29"
+project: acme-ops-agent
+version: 1.0.0
+updated: "2026-09-12"
+language: en
+
+trust:
+  provenance:
+    publisher: "ACME SRE"
+
+payment:
+  default_tier: free
+  methods:
+    - type: free
+
+units:
+  - id: ops-deploy
+    path: skills/ops-deploy/SKILL.md
+    intent: "Audit the ACME ops service configuration."
+    audience: [agent]
+    triggers: [ops, audit, deploy, config]
+    kind: skill
+    load_eligible: true
+    action_scope:
+      tools: [read]
+      paths: ["ops/", "skills/"]

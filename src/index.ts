@@ -1,6 +1,6 @@
 import { access, readFile } from "node:fs/promises";
-import { constants } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { constants, existsSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { type GovernanceDecision, GovernedLoop } from "./governed-loop.js";
 import { missingStages, type GateFailurePosture, type GovernanceMode, TOOL_STAGES, type TurnRecord, ungovernedReason } from "./runtime.js";
@@ -70,6 +70,22 @@ export type { ManifestStep, ManifestUnitLike, PlaybookManifest, GatedStep, Playb
 export type { GateFailurePosture, GovernanceMode, Stage, StageDecision, StageStatus, TurnRecord } from "./runtime.js";
 export { childContext, isTraceparent, mintTraceparent, traceIdOf } from "./correlation.js";
 export type { TurnContext } from "./correlation.js";
+// #151 — persisted, signed turn ledger: signs + appends every completed TurnRecord (reusing
+// kcp-harness's ed25519 primitives, the same ones wallet.ts's settlement path already uses),
+// and an offline verifier to replay/audit a ledger file independent of the running process.
+export {
+  canonicalSignedTurnPayload,
+  createFileLedgerHook,
+  signTurnRecord,
+  verifyLedgerFile,
+  verifySignedTurnEntry,
+} from "./signed-ledger.js";
+export type {
+  FileLedgerOptions,
+  LedgerVerificationResult,
+  SignedTurnEntry,
+  SignedTurnSignature,
+} from "./signed-ledger.js";
 export {
   detectAgentSkillLoad,
   detectForcedSkill,
@@ -369,6 +385,19 @@ async function loadConfig(cwd: string): Promise<LoadedConfig> {
   }
 }
 
+/**
+ * The turn boundary's one piece of real decision logic — factored out so `turn_start` and
+ * `before_agent_start` (see governed-loop.ts's {@link GovernedLoop.openTurnIfNeeded} for why
+ * both need it independently) can never quietly disagree about what a turn is governed under.
+ */
+async function resolveTurnMode(
+  cwd: string,
+  governOverride: GovernanceMode | undefined,
+): Promise<{ mode: GovernanceMode; config: KcpConfig }> {
+  const { config } = await loadConfig(cwd);
+  return { mode: governOverride ?? (config.enabled ? config.governance : "off"), config };
+}
+
 async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -421,10 +450,67 @@ async function commandInvocation(pi: ExtensionAPI, command: string): Promise<Age
   return path ? agentInvocationForPath(path.split("\n")[0]) : undefined;
 }
 
-async function findAgentInvocation(pi: ExtensionAPI, config: KcpConfig): Promise<AgentInvocation | undefined> {
+/**
+ * Project root for local tool lookup: the nearest ancestor of `cwd` (inclusive) that contains
+ * `.git` (a directory, or a file for git worktrees/submodules). With no `.git` anywhere above,
+ * the root is `cwd` itself, so the search never extends beyond the working directory.
+ */
+export function findProjectRoot(cwd: string): string {
+  const start = resolve(cwd);
+  let dir = start;
+  for (;;) {
+    if (existsSync(resolve(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return start;
+    dir = parent;
+  }
+}
+
+/**
+ * `<dir>/node_modules/.bin/<binName>` for `cwd` and each ancestor up to, and including, the
+ * project root (see `findProjectRoot`) — so a repo's own (possibly transitive, e.g. via
+ * kcp-harness) devDependency resolves the way `npm run`/`bunx` would, including from nested
+ * workspace packages.
+ *
+ * SECURITY: kcp-agent is the governance decision-maker, so this lookup must never execute a
+ * binary the project owner did not put inside the project. The walk is therefore bounded at the
+ * project root (a planted `/tmp/node_modules/.bin/kcp-agent` or a parent-directory binary above
+ * a cloned repo is never a candidate), and each candidate's realpath must stay inside the
+ * project root's realpath (a symlink that points out of the repo is rejected). Candidates that
+ * do not exist are omitted.
+ */
+export function localNodeModulesBinPaths(cwd: string, binName: string): string[] {
+  const root = findProjectRoot(cwd);
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return [];
+  }
+  const paths: string[] = [];
+  let dir = resolve(cwd);
+  for (;;) {
+    const candidate = resolve(dir, "node_modules", ".bin", binName);
+    try {
+      const real = realpathSync(candidate);
+      const rel = relative(realRoot, real);
+      if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) paths.push(candidate);
+    } catch {
+      // Missing or dangling: not a candidate.
+    }
+    if (dir === root) break;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return paths;
+}
+
+export async function findAgentInvocation(pi: ExtensionAPI, cwd: string, config: KcpConfig): Promise<AgentInvocation | undefined> {
   const configured = [config.agentCli, process.env.KCP_AGENT_CLI]
     .filter((candidate): candidate is string => Boolean(candidate));
   const knownPaths = [
+    ...localNodeModulesBinPaths(cwd, "kcp-agent"),
     "/opt/homebrew/lib/node_modules/kcp-harness/node_modules/kcp-agent/dist/cli.js",
     `${process.env.HOME ?? ""}/.npm-global/lib/node_modules/kcp-harness/node_modules/kcp-agent/dist/cli.js`,
   ];
@@ -458,7 +544,7 @@ async function runKcpAgent(
   config: KcpConfig,
   correlationId?: string,
 ): Promise<string> {
-  const invocation = await findAgentInvocation(pi, config);
+  const invocation = await findAgentInvocation(pi, cwd, config);
   if (!invocation) throw new Error(agentNotFoundMessage(config));
 
   // The turn's correlation id goes to the agent only if the installed agent documents the
@@ -531,7 +617,7 @@ async function runSkillTrace(
   config: KcpConfig,
   correlationId?: string,
 ): Promise<string | undefined> {
-  const invocation = await findAgentInvocation(pi, config);
+  const invocation = await findAgentInvocation(pi, cwd, config);
   if (!invocation) return undefined;
 
   const supported = await supportsFlag(
@@ -821,7 +907,7 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
         const memory = await fetchJson(`${config.memoryUrl.replace(/\/$/, "")}/health`, config.timeoutMs)
           .then(() => "ok")
           .catch(() => "unavailable");
-        const agent = await findAgentInvocation(pi, config);
+        const agent = await findAgentInvocation(pi, ctx.cwd, config);
         const configLine = loaded.status === "invalid"
           ? `invalid — ${loaded.errors.join("; ")}`
           : `${loaded.status}${config.enabled ? "" : " (disabled)"}`;
@@ -845,14 +931,12 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // The turn's configuration, captured with it, so the plan stage need not re-read disk.
   let turnConfig: KcpConfig = defaultConfig;
 
-  // Recompute mode/config from disk. Pi's real order is `input` → `before_agent_start` →
-  // `turn_start(0)` (ref #69/#71), so on a session's very first prompt `before_agent_start`
-  // (the plan stage) runs before any `turn_start` ever has — reading only from `turn_start`
-  // left `mode` at its "off" declaration default and the plan stage silently never ran on
-  // cold start. Both boundaries call this now, so whichever fires first seeds it.
-  const refreshMode = async (cwd: string): Promise<KcpConfig> => {
-    const { config } = await loadConfig(cwd);
-    mode = governOverride ?? (config.enabled ? config.governance : "off");
+  // Apply a resolved turn configuration to the shared turn state. Both `turn_start` and
+  // `before_agent_start` call this: Pi's real order is `input` -> `before_agent_start` ->
+  // `turn_start(0)` (ref #69/#71), so on a session's first prompt whichever fires first must
+  // seed `mode`/`posture`/`turnConfig` and the built-in checker's strict flag.
+  const applyTurnConfig = (resolvedMode: GovernanceMode, config: KcpConfig): void => {
+    mode = resolvedMode;
     posture = config.gateFailurePosture;
     turnConfig = config;
     // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
@@ -860,7 +944,6 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     if (builtInChecker && options.requireActiveSkill === undefined) {
       builtInChecker.requireActiveSkill = config.requireActiveSkill;
     }
-    return config;
   };
 
   // The outermost start of a Pi run (#71 follow-up leak). Pi re-emits `agent_start` for
@@ -875,9 +958,68 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   });
 
   // Mint a fresh per-turn correlation id (#29) at the turn boundary.
+  //
+  // NOT reliably the first event of a turn — see `before_agent_start` immediately below,
+  // which races ahead of this on Pi 0.80.6 and may already have opened the turn this
+  // handler would otherwise open again, discarding `plan`'s just-recorded decision.
   pi.on("turn_start", async (event, ctx) => {
-    await refreshMode(ctx.cwd);
-    loop.beginTurn(event.turnIndex, mode);
+    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
+    applyTurnConfig(resolvedMode, config);
+    loop.openRoundFromTurnStart(event.turnIndex, mode);
+  });
+
+  // plan — the prompt is known and Pi has already assembled what it loaded, so the stage can
+  // inspect that rather than re-discovering resources. Lives here, next to `turn_start`, not
+  // in `registerGovernedCycle` below with the other five stages: unlike every other governed-
+  // cycle event, `before_agent_start` is dispatched by Pi from a direct call inside `prompt()`,
+  // on a genuinely different path than the generic extension-event pipeline `turn_start` (and
+  // everything below) goes through — confirmed by tracing real timestamps against Pi 0.80.6,
+  // `before_agent_start` fires BEFORE `turn_start` has run. It cannot trust `mode`/`turnConfig`
+  // (set by `turn_start`) or assume `loop`'s ledger is already scoped to this turn — so unlike
+  // every other stage here, it resolves both independently and opens the round itself if
+  // `turn_start` hasn't already (see {@link GovernedLoop.openRoundFromTurnStart}'s doc for the
+  // full, order-agnostic mechanism this and `turn_start` share).
+  pi.on("before_agent_start", async (event, ctx) => {
+    // Unconditional, like `agent_start`/`agent_settled` (#71 early-failure leak): marks the
+    // latest observed input as one Pi has actually committed to running, regardless of
+    // governance mode. First, so a later throw (e.g. from the config read) cannot skip it.
+    loop.onBeforeAgentStart();
+    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride);
+    // Seed the shared turn state even when the plan stage will not run: this fires BEFORE
+    // the first `turn_start` of a session (ref #69), so `mode`/`posture`/the built-in
+    // checker's strict flag would otherwise still be their declaration defaults.
+    applyTurnConfig(resolvedMode, config);
+    if (resolvedMode !== "full") return undefined;
+    loop.openRoundFromBeforeAgentStart(resolvedMode);
+
+    await loop.stage("plan", async () => {
+      const detail: Record<string, unknown> = {
+        promptBytes: Buffer.byteLength(event.prompt, "utf8"),
+        systemPromptBytes: Buffer.byteLength(event.systemPrompt, "utf8"),
+        systemPromptDigest: digest(event.systemPrompt),
+        ...(loop.currentSkill() ? { skill: loop.currentSkill()?.skillName } : {}),
+      };
+
+      // Procedural governance (#28): adjudicate declared units against the planner's gates
+      // now, so skill selection later in the turn has a verdict to consult — and so a skill
+      // already forced at `input` can still be revoked before it shapes anything.
+      const trace = await runSkillTrace(pi, ctx.cwd, event.prompt, config, loop.currentCorrelationId());
+      if (trace === undefined) {
+        return { detail: { ...detail, gated: false } };
+      }
+
+      const units = parseTrace(trace);
+      const revoked = loop.setTracedUnits(units);
+      return {
+        detail: {
+          ...detail,
+          gated: true,
+          units: units.length,
+          ...(revoked ? { revokedSkill: revoked.skillName } : {}),
+        },
+      };
+    });
+    return undefined;
   });
 
   pi.on("input", async (event, ctx) => {
@@ -950,12 +1092,13 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     return decision.block ? { block: true, reason: decision.reason } : undefined;
   });
 
-  registerGovernedCycle(pi, loop, () => mode, () => turnConfig, refreshMode);
+  registerGovernedCycle(pi, loop, () => mode);
 }
 
 /**
- * The governed cycle across Pi's lifecycle (#27). Eight events, seven stages, one decision
- * record per stage per turn.
+ * The rest of the governed cycle across Pi's lifecycle (#27) — six events, six stages
+ * (`plan`/`before_agent_start` lives with `turn_start` above instead; see its own comment
+ * there for why), one decision record per stage per turn.
  *
  * `before_provider_request` is deliberately not used: its payload and result are both
  * `unknown`, an untyped escape hatch. Every stage below anchors on a typed contract.
@@ -965,60 +1108,11 @@ function registerGovernedCycle(
   pi: ExtensionAPI,
   loop: GovernedLoop,
   mode: () => GovernanceMode,
-  turnConfig: () => KcpConfig,
-  refreshMode: (cwd: string) => Promise<KcpConfig>,
 ): void {
-  // The five non-tool stages belong to `full` only. `tool` mode is the governance
+  // The four non-tool stages belong to `full` only. `tool` mode is the governance
   // boundary without the per-turn planner invocation.
   const full = (): boolean => mode() === "full";
   const anyCycle = (): boolean => mode() !== "off";
-  // plan — the prompt is known and Pi has already assembled what it loaded, so the stage
-  // can inspect that rather than re-discovering resources.
-  pi.on("before_agent_start", async (event, ctx) => {
-    // Unconditional, like `agent_start`/`agent_settled` (#71 early-failure leak): marks
-    // the latest observed input as one Pi has actually committed to running, regardless
-    // of governance mode. First, so a later throw (e.g. from `refreshMode`'s config read)
-    // can't skip it.
-    loop.onBeforeAgentStart();
-    // Refresh here too: this fires BEFORE the first `turn_start` of a prompt (ref #69), so
-    // on a session's first-ever prompt `mode` would otherwise still be the "off" default.
-    await refreshMode(ctx.cwd);
-    if (!full()) return undefined;
-    await loop.stage("plan", async () => {
-      const detail: Record<string, unknown> = {
-        promptBytes: Buffer.byteLength(event.prompt, "utf8"),
-        systemPromptBytes: Buffer.byteLength(event.systemPrompt, "utf8"),
-        systemPromptDigest: digest(event.systemPrompt),
-        ...(loop.currentSkill() ? { skill: loop.currentSkill()?.skillName } : {}),
-      };
-
-      // Procedural governance (#28): adjudicate declared units against the planner's gates
-      // now, so skill selection later in the turn has a verdict to consult — and so a skill
-      // already forced at `input` can still be revoked before it shapes anything.
-      const trace = await runSkillTrace(
-        pi,
-        ctx.cwd,
-        event.prompt,
-        turnConfig(),
-        loop.currentCorrelationId(),
-      );
-      if (trace === undefined) {
-        return { detail: { ...detail, gated: false } };
-      }
-
-      const units = parseTrace(trace);
-      const revoked = loop.setTracedUnits(units);
-      return {
-        detail: {
-          ...detail,
-          gated: true,
-          units: units.length,
-          ...(revoked ? { revokedSkill: revoked.skillName } : {}),
-        },
-      };
-    });
-    return undefined;
-  });
 
   // load — the context assembly point. Phase 1 records what was assembled; injection of
   // planned units lands with the evidence-integrity work (Phase 3).
@@ -1033,16 +1127,22 @@ function registerGovernedCycle(
   // synthesize is the provider's, and ground checks what it returned. Both are known at
   // agent_end: the messages are the evidence that synthesis happened at all.
   //
-  // NOT the prompt boundary (ref #71): Pi may retry, compact, or run a queued
-  // continuation after `agent_end` with no new `input` in between
-  // (`while (_handlePostAgentRun()) agent.continue()` in agent-session.js) — the
-  // prompt-scoped skill slot must survive that, so nothing is cleared here.
+  // Uses `recordLateStage`, not `stage`: Pi 0.80.6 fires `agent_end` AFTER `turn_end` (traced
+  // against real timestamps — see `openTurnIfNeeded`'s and `recordLateStage`'s docs in
+  // governed-loop.ts), so by the time this handler runs, `finishTurn` has usually already
+  // closed the turn these stages describe and pushed it to history. `mode()`/`full()` are
+  // safe to trust here unlike in `before_agent_start`: `agent_end` firing after `turn_end`
+  // means `turn_start` has definitely already run by now.
+  //
+  // NOT the prompt boundary (ref #71, #68): Pi may retry, compact, or run a queued
+  // continuation after `agent_end` with no new `input` in between — the prompt-scoped skill
+  // slot must survive that, so nothing is cleared here.
   pi.on("agent_end", async (event) => {
     if (!full()) return undefined;
-    await loop.stage("synthesize", async () => ({
+    await loop.recordLateStage("synthesize", async () => ({
       detail: { owner: "provider", messages: event.messages.length },
     }));
-    await loop.stage("ground", async () => ({
+    await loop.recordLateStage("ground", async () => ({
       detail: { messages: event.messages.length },
     }));
     return undefined;
