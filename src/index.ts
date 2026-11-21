@@ -1,6 +1,6 @@
 import { access, readFile } from "node:fs/promises";
-import { constants } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { constants, existsSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import { type GovernanceDecision, GovernedLoop } from "./governed-loop.js";
 import { missingStages, type GateFailurePosture, type GovernanceMode, TOOL_STAGES, type TurnRecord, ungovernedReason } from "./runtime.js";
@@ -452,23 +452,54 @@ async function commandInvocation(pi: ExtensionAPI, command: string): Promise<Age
 }
 
 /**
- * `<dir>/node_modules/.bin/kcp-agent` for `cwd` and every ancestor up to the filesystem
- * root — the same directory-walk Node's own module resolution uses, so a project that
- * declares kcp-agent as a (possibly transitive, e.g. via kcp-harness) dependency resolves
- * it the way `npm run`/`bunx` would, without needing it globally installed or on PATH.
- *
- * This was the missing case: `findAgentInvocation`'s only local checks were two hardcoded
- * GLOBAL install locations (Homebrew, `~/.npm-global`) plus a bare `which kcp-agent` — so a
- * project that `bun install`/`npm install`s kcp-agent locally (the common case; that's what
- * this repo's own devDependency on kcp-harness does) had no candidate that could ever match,
- * and fell through to "kcp-agent CLI was not found" even with a real, working install two
- * directories away in `node_modules/.bin/`.
+ * Project root for local tool lookup: the nearest ancestor of `cwd` (inclusive) that contains
+ * `.git` (a directory, or a file for git worktrees/submodules). With no `.git` anywhere above,
+ * the root is `cwd` itself, so the search never extends beyond the working directory.
  */
-function localNodeModulesBinPaths(cwd: string, binName: string): string[] {
+export function findProjectRoot(cwd: string): string {
+  const start = resolve(cwd);
+  let dir = start;
+  for (;;) {
+    if (existsSync(resolve(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return start;
+    dir = parent;
+  }
+}
+
+/**
+ * `<dir>/node_modules/.bin/<binName>` for `cwd` and each ancestor up to, and including, the
+ * project root (see `findProjectRoot`) — so a repo's own (possibly transitive, e.g. via
+ * kcp-harness) devDependency resolves the way `npm run`/`bunx` would, including from nested
+ * workspace packages.
+ *
+ * SECURITY: kcp-agent is the governance decision-maker, so this lookup must never execute a
+ * binary the project owner did not put inside the project. The walk is therefore bounded at the
+ * project root (a planted `/tmp/node_modules/.bin/kcp-agent` or a parent-directory binary above
+ * a cloned repo is never a candidate), and each candidate's realpath must stay inside the
+ * project root's realpath (a symlink that points out of the repo is rejected). Candidates that
+ * do not exist are omitted.
+ */
+export function localNodeModulesBinPaths(cwd: string, binName: string): string[] {
+  const root = findProjectRoot(cwd);
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    return [];
+  }
   const paths: string[] = [];
   let dir = resolve(cwd);
   for (;;) {
-    paths.push(resolve(dir, "node_modules", ".bin", binName));
+    const candidate = resolve(dir, "node_modules", ".bin", binName);
+    try {
+      const real = realpathSync(candidate);
+      const rel = relative(realRoot, real);
+      if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) paths.push(candidate);
+    } catch {
+      // Missing or dangling: not a candidate.
+    }
+    if (dir === root) break;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
@@ -927,15 +958,12 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // The turn's configuration, captured with it, so the plan stage need not re-read disk.
   let turnConfig: KcpConfig = defaultConfig;
 
-  // Mint a fresh per-turn correlation id (#29) at the turn boundary.
-  //
-  // NOT reliably the first event of a turn — see `before_agent_start` immediately below,
-  // which races ahead of this on Pi 0.80.6 and may already have opened the turn this
-  // handler would otherwise open again, discarding `plan`'s just-recorded decision.
-  pi.on("turn_start", async (event, ctx) => {
-    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride, () => pinnedConfig(ctx));
+  // Apply a resolved turn configuration to the shared turn state. Both `turn_start` and
+  // `before_agent_start` call this: Pi's real order is `input` -> `before_agent_start` ->
+  // `turn_start(0)` (ref #69/#71), so on a session's first prompt whichever fires first must
+  // seed `mode`/`posture`/`turnConfig` and the built-in checker's strict flag.
+  const applyTurnConfig = (resolvedMode: GovernanceMode, config: KcpConfig): void => {
     mode = resolvedMode;
-    loop.openRoundFromTurnStart(event.turnIndex, mode);
     posture = config.gateFailurePosture;
     turnConfig = config;
     // Let `.pi/kcp.json` drive strict mode for the built-in checker, unless RegisterOptions
@@ -943,6 +971,28 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
     if (builtInChecker && options.requireActiveSkill === undefined) {
       builtInChecker.requireActiveSkill = config.requireActiveSkill;
     }
+  };
+
+  // The outermost start of a Pi run (#71 follow-up leak). Pi re-emits `agent_start` for
+  // every in-prompt retry/`continue()` too — `GovernedLoop.onAgentStart()` itself ignores
+  // every call after the first for a run in flight, so this is safe to wire unconditionally.
+  // Closes: a prompt that fails before ever starting a run (model/auth validation, a
+  // failed `before_agent_start`) never reaches `agent_settled` either, so a later run
+  // with no `input` of its own (e.g. `sendCustomMessage({ triggerTurn: true })`) would
+  // otherwise inherit whatever `input` last set.
+  pi.on("agent_start", async () => {
+    loop.onAgentStart();
+  });
+
+  // Mint a fresh per-turn correlation id (#29) at the turn boundary.
+  //
+  // NOT reliably the first event of a turn — see `before_agent_start` immediately below,
+  // which races ahead of this on Pi 0.80.6 and may already have opened the turn this
+  // handler would otherwise open again, discarding `plan`'s just-recorded decision.
+  pi.on("turn_start", async (event, ctx) => {
+    const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride, () => pinnedConfig(ctx));
+    applyTurnConfig(resolvedMode, config);
+    loop.openRoundFromTurnStart(event.turnIndex, mode);
   });
 
   // plan — the prompt is known and Pi has already assembled what it loaded, so the stage can
@@ -957,13 +1007,16 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   // `turn_start` hasn't already (see {@link GovernedLoop.openRoundFromTurnStart}'s doc for the
   // full, order-agnostic mechanism this and `turn_start` share).
   pi.on("before_agent_start", async (event, ctx) => {
+    // Unconditional, like `agent_start`/`agent_settled` (#71 early-failure leak): marks the
+    // latest observed input as one Pi has actually committed to running, regardless of
+    // governance mode. First, so a later throw (e.g. from the config read) cannot skip it.
+    loop.onBeforeAgentStart();
     const { mode: resolvedMode, config } = await resolveTurnMode(ctx.cwd, governOverride, () => pinnedConfig(ctx));
+    // Seed the shared turn state even when the plan stage will not run: this fires BEFORE
+    // the first `turn_start` of a session (ref #69), so `mode`/`posture`/the built-in
+    // checker's strict flag would otherwise still be their declaration defaults.
+    applyTurnConfig(resolvedMode, config);
     if (resolvedMode !== "full") return undefined;
-    // Keep the shared turn state current for anything that fires in the (short) window
-    // before `turn_start` itself runs and overwrites these with the same values.
-    mode = resolvedMode;
-    turnConfig = config;
-    posture = config.gateFailurePosture;
     loop.openRoundFromBeforeAgentStart(resolvedMode);
 
     await loop.stage("plan", async () => {
@@ -997,9 +1050,24 @@ export default function register(pi: ExtensionAPI, options: RegisterOptions = {}
   });
 
   pi.on("input", async (event, ctx) => {
+    // A genuine new prompt boundary, not a mid-run steer/follow-up/poisoned re-entry.
+    // `event.streamingBehavior` is NOT a reliable discriminator: Pi's `prompt()` passes
+    // `this.isStreaming ? options?.streamingBehavior : undefined` into `emitInput`
+    // (agent-session.js:~795) — a `prompt()` call made mid-run WITHOUT `streamingBehavior`
+    // (which Pi then rejects at :812-814, AFTER `input` has already fired) looks identical
+    // to a genuine idle prompt: `streamingBehavior` is `undefined` either way. `ctx.isIdle()`
+    // is Pi's own live run-state flag (`!session.isStreaming`), read at the moment this
+    // handler runs, so it is accurate for both cases this guards against: a mid-run call
+    // with no `streamingBehavior` (not idle — don't touch the in-force skill) and the
+    // settle race (Pi clears `_isAgentRunActive` before emitting `agent_settled`, so a new
+    // prompt started synchronously from an earlier `agent_settled` handler IS idle here,
+    // same as any other genuine new prompt). Detect user-forced skills (#28) and reset the
+    // prompt-scoped skill slot only when idle — regardless of source, so an
+    // extension-driven prompt (Pi's `sendUserMessage`) is covered too.
+    if (ctx.isIdle()) {
+      loop.observeInput(event.text, getCommands());
+    }
     if (event.source === "extension") return { action: "continue" as const };
-    // Detect user-forced skills (#28): `/skill:<name>` selects a skill for the turn.
-    loop.observeInput(event.text, getCommands());
     const config = (await pinnedConfig(ctx)).config;
     const transformed = await augmentPrompt(event.text, config);
     return transformed === event.text
@@ -1092,6 +1160,10 @@ function registerGovernedCycle(
   // closed the turn these stages describe and pushed it to history. `mode()`/`full()` are
   // safe to trust here unlike in `before_agent_start`: `agent_end` firing after `turn_end`
   // means `turn_start` has definitely already run by now.
+  //
+  // NOT the prompt boundary (ref #71, #68): Pi may retry, compact, or run a queued
+  // continuation after `agent_end` with no new `input` in between — the prompt-scoped skill
+  // slot must survive that, so nothing is cleared here.
   pi.on("agent_end", async (event) => {
     if (!full()) return undefined;
     await loop.recordLateStage("synthesize", async () => ({
@@ -1100,6 +1172,23 @@ function registerGovernedCycle(
     await loop.recordLateStage("ground", async () => ({
       detail: { messages: event.messages.length },
     }));
+    return undefined;
+  });
+
+  // The true prompt boundary: fired once the run has fully settled — no automatic retry,
+  // compaction, or queued continuation will run (docs/extensions.md). Unconditional, not
+  // gated by `full()`: the prompt-scoped skill slot must not leak into the next prompt
+  // regardless of governance mode.
+  //
+  // Overlap guard (#71 follow-up): `!ctx.isIdle()` means a NEWER run has already set
+  // Pi's flag (an earlier extension's `agent_settled` handler started it before this
+  // older run's own settle reached us) — this event belongs to a run that is no longer
+  // current, and calling `endPrompt` now would race the newer run's own state. Leave it
+  // untouched; `GovernedLoop.onAgentStart`'s overlap claim and that run's own eventual
+  // `agent_settled` (idle once it fires) resolve it correctly either order.
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!ctx.isIdle()) return undefined;
+    loop.endPrompt();
     return undefined;
   });
 
