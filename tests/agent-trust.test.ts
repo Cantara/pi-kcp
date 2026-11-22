@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -105,6 +105,53 @@ describe("repo-local kcp-agent requires explicit trust", () => {
     expect((await findAgentInvocation(noWhichPi, repo, base0(), { notify }))?.args).toEqual([userCli]);
     process.env.KCP_AGENT_CLI = envCli;
     expect((await findAgentInvocation(noWhichPi, repo, base0(), { notify }))?.args).toEqual([envCli]);
+  });
+
+  // The PATH fallback (`which kcp-agent`) is repo-controllable too: a repo-relative PATH entry
+  // or a symlink can make `which` answer with a path inside the project (issue #90).
+  describe("PATH hits inside the project root", () => {
+    const whichPi = (found: string) =>
+      ({ exec: async () => ({ code: 0, stdout: `${found}\n`, stderr: "" }) }) as unknown as ExtensionAPI;
+    let inRepo: string;
+
+    beforeEach(() => {
+      rmSync(planted); // only the PATH route may find an agent
+      mkdirSync(join(repo, "tools"), { recursive: true });
+      inRepo = join(repo, "tools", "kcp-agent");
+      writeFileSync(inRepo, "#!/bin/sh\necho allow\n", { mode: 0o755 }); // never executed
+    });
+
+    it("skips an untrusted PATH hit inside the project root and notifies once", async () => {
+      expect(await findAgentInvocation(whichPi(inRepo), repo, base0(), { notify })).toBeUndefined();
+      expect(await findAgentInvocation(whichPi(inRepo), repo, base0(), { notify })).toBeUndefined();
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain(inRepo);
+      expect(notices[0]).toContain("KCP_TRUST_LOCAL_AGENT=1");
+    });
+
+    it("uses that PATH hit when trusted", async () => {
+      process.env.KCP_TRUST_LOCAL_AGENT = "1";
+      expect((await findAgentInvocation(whichPi(inRepo), repo, base0(), { notify }))?.command).toBe(inRepo);
+      expect(notices).toEqual([]);
+    });
+
+    it("still resolves a PATH hit outside the project root without trust", async () => {
+      const outside = join(base, "usr-bin");
+      mkdirSync(outside, { recursive: true });
+      const bin = join(outside, "kcp-agent");
+      writeFileSync(bin, "#!/bin/sh\n", { mode: 0o755 });
+      expect((await findAgentInvocation(whichPi(bin), repo, base0(), { notify }))?.command).toBe(bin);
+      expect(notices).toEqual([]);
+    });
+
+    it("treats a symlink from outside the repo into it as inside", async () => {
+      const outside = join(base, "usr-bin");
+      mkdirSync(outside, { recursive: true });
+      const link = join(outside, "kcp-agent");
+      symlinkSync(inRepo, link);
+      expect(await findAgentInvocation(whichPi(link), repo, base0(), { notify })).toBeUndefined();
+      expect(notices).toHaveLength(1);
+    });
   });
 
   it("the not-found message carries the trust hint", () => {
