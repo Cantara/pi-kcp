@@ -445,11 +445,33 @@ export function agentInvocationForPath(path: string): AgentInvocation {
     : { command: path, args: [], label: path };
 }
 
-async function commandInvocation(pi: ExtensionAPI, command: string): Promise<AgentInvocation | undefined> {
+/** Where a `which` lookup landed, relative to the project: PATH is repo-controllable too (issue #90). */
+interface PathGuard {
+  cwd: string;
+  trusted: boolean;
+  /** Raise the once-per-session "untrusted repo-local agent skipped" notice for these paths. */
+  announce: (paths: string[]) => void;
+}
+
+function isInsideProject(path: string, cwd: string): boolean {
+  const real = safeRealpath(path);
+  const root = safeRealpath(findProjectRoot(cwd));
+  if (!real || !root) return false;
+  const rel = relative(root, real);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+async function commandInvocation(pi: ExtensionAPI, command: string, guard?: PathGuard): Promise<AgentInvocation | undefined> {
   const result = await pi.exec("which", [command], { timeout: 2_000 });
   if (result.code !== 0) return undefined;
-  const path = result.stdout.trim();
-  return path ? agentInvocationForPath(path.split("\n")[0]) : undefined;
+  const path = result.stdout.trim().split("\n")[0];
+  if (!path) return undefined;
+  // A PATH hit that resolves (symlinks followed) into the project is repo-local: same trust rule.
+  if (guard && !guard.trusted && isInsideProject(path, guard.cwd)) {
+    guard.announce([path]);
+    return undefined;
+  }
+  return agentInvocationForPath(path);
 }
 
 /**
@@ -589,19 +611,23 @@ export async function findAgentInvocation(
   if (config.agentCli) repoLocal.push(config.agentCli);
   repoLocal.push(...localNodeModulesBinPaths(cwd, "kcp-agent"));
 
-  const skipped: string[] = [];
+  const announce = (paths: string[]) => {
+    const fresh = paths.filter((candidate) => !announcedUntrusted.has(candidate));
+    if (fresh.length === 0) return;
+    for (const candidate of fresh) announcedUntrusted.add(candidate);
+    notify(
+      `pi-kcp: skipped untrusted repo-local kcp-agent (${fresh.join(", ")}). kcp-agent makes the governance decisions, so a repository must not choose it. ${TRUST_HINT}`,
+    );
+  };
+  const guard: PathGuard = { cwd, trusted, announce };
+
   if (!trusted) {
+    const skipped: string[] = [];
     for (const candidate of repoLocal) {
       const pathLike = candidate.includes("/") || /\.(?:cjs|mjs|js)$/.test(candidate);
       if (!pathLike || (await access(candidate, constants.R_OK).then(() => true, () => false))) skipped.push(candidate);
     }
-    const fresh = skipped.filter((candidate) => !announcedUntrusted.has(candidate));
-    if (fresh.length > 0) {
-      for (const candidate of fresh) announcedUntrusted.add(candidate);
-      notify(
-        `pi-kcp: skipped untrusted repo-local kcp-agent (${fresh.join(", ")}). kcp-agent makes the governance decisions, so a repository must not choose it. ${TRUST_HINT}`,
-      );
-    }
+    announce(skipped);
   }
 
   const candidates = [
@@ -614,7 +640,7 @@ export async function findAgentInvocation(
 
   for (const candidate of candidates) {
     if (!candidate.includes("/") && !/\.(?:cjs|mjs|js)$/.test(candidate)) {
-      const invocation = await commandInvocation(pi, candidate);
+      const invocation = await commandInvocation(pi, candidate, guard);
       if (invocation) return invocation;
       continue;
     }
@@ -627,7 +653,7 @@ export async function findAgentInvocation(
   }
 
   // PATH fallback: not covered by the trust gate (see the proposal discussion, gap (c)).
-  return commandInvocation(pi, "kcp-agent");
+  return commandInvocation(pi, "kcp-agent", guard);
 }
 
 export function agentNotFoundMessage(config: KcpConfig): string {

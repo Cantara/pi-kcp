@@ -1,5 +1,9 @@
 # Release notes
 
+## Unreleased
+
+- The `PATH` fallback for `kcp-agent` no longer bypasses the trust gate (#90): a `which` hit whose real path is inside the project root is treated as repo-local, skipped with the once-per-session notice unless trusted (`KCP_TRUST_LOCAL_AGENT=1` or user-level config). Hits outside the project root are unchanged.
+
 ## 0.14.0 — a skill holds for the whole prompt, and a repository can no longer choose the governance agent — 2026-11-21
 
 Three changes land together; two of them change behaviour you may rely on. Upgrade notes are at the end.
